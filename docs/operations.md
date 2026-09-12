@@ -79,13 +79,38 @@ mana hermes logs        # combined required-service logs
 The base image supervises the dashboard; Mana does not launch a second copy.
 Mana's entrypoint terminates the container if search or browser exits. The runtime
 does not automatically restart the container; inspect logs and use `restart` or doctor.
-Startup waits up to 90 seconds between bounded endpoint probes. Health checks do
+Startup retries endpoint probes for about 90 seconds, with a one-second pause
+between attempts; individual requests can add to that deadline. Health checks do
 not generate text, open browser tabs, or search the internet.
 
 The live settings are seeded from [the tracked example](../hermes/config.yaml.example).
 Edit the local configuration or use the dashboard; restart afterward when a
 setting is loaded only at process startup. Changing a mount, published port, or
 resource allocation requires recreating the container, not just restarting it.
+
+The template selects local oMLX plus an Ollama Cloud `fallback_model`. The fallback
+requires `OLLAMA_API_KEY` and can send prompts/context off-machine when used.
+Remove the entire `fallback_model` entry in the live configuration and restart
+Hermes for local-only LLM inference; this does not disable web tools or network egress.
+
+### Bootstrap Behavior
+
+Bootstrap is a reconcile operation, not a promise to leave existing settings untouched:
+
+| Setting or state | Behavior on rerun |
+|------------------|-------------------|
+| Machine identity | Rewrites local identity when it differs from the current user/hostname |
+| oMLX bind address | Enforces `0.0.0.0` for VM access |
+| oMLX global context | Enforces `sampling.max_context_window = 65536`; model overrides remain separate |
+| Shared oMLX key | Prefers the server key, then the existing Hermes key, then generates one; synchronizes Hermes |
+| Dashboard credentials | Seeds missing/empty fields; keeps existing nonempty values |
+| Live Hermes configuration | Seeds from the example only when missing; does not replace it |
+| Models, memories, workspace, named volume | Retains existing data |
+| Services and dependencies | Reconciles Nix/Brew inventory, checks runtime/app releases, restarts oMLX and Hermes |
+
+`mana rebuild` is the narrower choice for local Nix edits. `mana hermes restart`
+reloads Hermes configuration without updating its image; a missing image is built
+on demand. Bootstrap does not rebuild an existing Hermes image.
 
 ## Apply And Update
 
@@ -101,11 +126,21 @@ Activation uses a temporary source containing tracked working-tree files plus
 the local machine identity. Ignored credentials and runtime data stay out of the
 Nix store. New source files must be tracked to participate in that source snapshot.
 
+Keep [flake.lock](../flake.lock) committed. After an intentional `mana update`,
+review the lockfile diff, verify activation and `mana doctor`, and commit the
+tested pins, preferably separately from feature changes. Do not routinely delete
+or ignore the lockfile. Modelops dependencies have their own [lockfile](../modelops/uv.lock).
+
 ## Backups
 
 Protect backups as secrets. At minimum preserve the local Hermes configuration,
 credentials, memories, workspace, and `~/.omlx/` settings. Model weights can be
 backed up or downloaded again. Git alone does not back up runtime state.
+
+The examples below are a recovery procedure, not an automated, end-to-end tested
+backup system. Use new archive names for each backup, check command exit codes,
+list both archives with `tar tzf`, and rehearse restoration into disposable state
+before relying on them. Do not overwrite your only known-good backup.
 
 For a consistent Hermes backup, stop it first:
 

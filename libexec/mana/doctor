@@ -25,7 +25,7 @@ for argument in "$@"; do
         --fix) FIX=1 ;;
         --yes) ASSUME_YES=1 ;;
         -h|--help)
-            sed -n '2,7p' "$0"
+            awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
             printf '\n--fix warns and asks before disruptive repairs. --yes skips that prompt.\n'
             exit 0 ;;
         *) printf "Unknown option: %s (try --help)\n" "$argument" >&2; exit 2 ;;

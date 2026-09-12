@@ -229,6 +229,6 @@ case "${1:-status}" in
     logs)    mkdir -p "$(dirname "$LOG")"; touch "$LOG"; exec tail -f "$LOG" ;;
     models)  cmd_models ;;
     key)     api_key || { echo "No API key found in $SETTINGS." >&2; exit 1; } ;;
-    -h|--help) sed -n '2,14p' "$0" ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" ;;
     *) echo "Usage: mana omlx {status|install|upgrade|start|stop|restart|logs|models|key}" >&2; exit 1 ;;
 esac

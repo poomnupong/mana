@@ -8,6 +8,17 @@ export HOME="$SANDBOX/home"
 mkdir -p "$HOME/.omlx/bin"
 ln -s /usr/bin/true "$HOME/.omlx/bin/omlx"
 
+. "$REPO_DIR/libexec/mana/bootstrap"
+[[ "$(container_version 'container CLI version 1.3.1 (build: release, commit: a9a62e2)')" == 1.3.1 ]]
+[[ "$(container_version 'container version 0.4.0')" == 0.4.0 ]]
+[[ "$(container_version 'container CLI version v1.4.0-rc.1+build.2')" == 1.4.0-rc.1+build.2 ]]
+for invalid in 'container CLI version unknown (commit: a9a62e2)' 'container CLI version 1.3.1garbage' ''; do
+    if container_version "$invalid" >/dev/null; then
+        printf 'FAIL bootstrap accepted an invalid container version\n' >&2; exit 1
+    fi
+done
+printf 'PASS bootstrap parses release versions and rejects unknown formats\n'
+
 pgrep() { return 1; }
 lsof() { return 1; }
 open() { printf 'mock app launch\n'; }
@@ -168,7 +179,7 @@ container() {
         'exec hermes-agent node --version') printf 'v26.5.1\n' ;;
         'exec hermes-agent npm --version') printf '11.17.0\n' ;;
         'exec hermes-agent /opt/hermes/.venv/bin/pip list --format json --disable-pip-version-check')
-            printf '[{"name":"hermes-agent","version":"0.20.6"},{"name":"searxng","version":"2026.8.29"}]\n' ;;
+            printf '[{"name":"hermes-agent","version":"0.20.6"},{"name":"searxng","version":"2026.8.29"},{"name":"hf-xet","version":"1.5.1"}]\n' ;;
         'exec hermes-agent npm list --global --depth=0 --json')
             printf '{"dependencies":{"camofox-browser":{"version":"2.4.7"}}}\n' ;;
         *) printf 'Unexpected version side effect: %s\n' "$*" >&2; return 99 ;;
@@ -179,6 +190,7 @@ output="$(/bin/bash "$REPO_DIR/bin/mana" version)"
 [[ "$output" == *'hermes-agent  0.20.6'* ]]
 [[ "$output" == *'camofox-browser  2.4.7'* ]]
 [[ "$output" == *'searxng  2026.8.29'* ]]
+[[ "$output" == *'hf-xet  1.5.1'* ]]
 if grep -Eq '(^| )(start|stop|restart|run|install|update)( |$)' "$VERSION_CALLS"; then
     printf 'FAIL version changed service state\n' >&2; exit 1
 fi
@@ -187,3 +199,41 @@ if /bin/bash "$REPO_DIR/bin/mana" version unexpected >"$SANDBOX/output" 2>&1; th
     printf 'FAIL version accepted an invalid argument\n' >&2; exit 1
 fi
 printf 'PASS version rejects invalid arguments\n'
+
+commands="$(/bin/bash "$REPO_DIR/bin/mana" help | awk '
+    /^Commands:$/ { in_commands=1; next }
+    in_commands && /^$/ { exit }
+    in_commands { print $1 }
+')"
+for command in $commands; do
+    help="$(/bin/bash "$REPO_DIR/bin/mana" help "$command")"
+    [[ "$help" == *'Usage:'* ]]
+    [[ "$help" == "$(/bin/bash "$REPO_DIR/bin/mana" "$command" --help)" ]]
+done
+help="$(/bin/bash "$REPO_DIR/bin/mana" help hermes)"
+[[ "$help" == *'logs       tail -f container logs'* ]]
+printf 'PASS every public command has consistent complete help\n'
+
+perl - "$REPO_DIR/README.md" "$REPO_DIR"/docs/*.md "$REPO_DIR/modelops/README.md" <<'PERL'
+use strict;
+use warnings;
+use File::Basename qw(dirname);
+my $failed = 0;
+for my $file (@ARGV) {
+    open my $handle, '<', $file or die "$file: $!\n";
+    local $/;
+    my $text = <$handle>;
+    while ($text =~ /\[[^\]]+\]\(([^)]+)\)/g) {
+        my $path = $1;
+        next if $path =~ m{^(?:[a-z]+:|#)}i;
+        $path =~ s/#.*//;
+        $path =~ s/%([0-9a-f]{2})/chr(hex($1))/egi;
+        unless (-e dirname($file) . '/' . $path) {
+            warn "$file: missing linked file $path\n";
+            $failed = 1;
+        }
+    }
+}
+exit $failed;
+PERL
+printf 'PASS local documentation file links resolve\n'

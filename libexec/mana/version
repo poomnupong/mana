@@ -76,7 +76,7 @@ nix_packages() {
 
 python_tools() {
     jq -r 'sort_by(.name)[]
-        | select(.name | test("^(hermes-agent|searxng|huggingface-hub|hf-transfer|mlx|mlx-lm|mlx-vlm|heretic-llm|torch|transformers|pip)$"; "i"))
+        | select(.name | test("^(hermes-agent|searxng|huggingface-hub|hf-transfer|hf-xet|mlx|mlx-lm|mlx-vlm|heretic-llm|torch|transformers|pip)$"; "i"))
         | "  \(.name)  \(.version)"'
 }
 

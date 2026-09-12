@@ -24,20 +24,30 @@ cd ~/repo/mana
 
 Bootstrap installs missing prerequisites, reconciles Nix/Homebrew, checks the
 latest Apple container and stable oMLX releases, seeds local settings, and
-starts Hermes. Existing configuration and persistent data are preserved.
+starts Hermes. Persistent data is retained; bootstrap reconciles Mana-owned
+settings, including machine identity, oMLX bind/context settings, and shared keys.
+See [bootstrap behavior](docs/operations.md#bootstrap-behavior) before rerunning it
+with customized settings.
 It can prompt for your macOS password; type it directly into the terminal.
 
 Keep the checkout at `~/repo/mana`: [home.nix](home.nix) uses that path for
 both shell access and login startup. Open a new terminal after bootstrap;
 until then, invoke `./bin/mana`.
 
-1. Open <http://127.0.0.1:8000/admin> and download a model suitable for your Mac.
-2. Set `model.default` in the local Hermes configuration to the ID shown by
-   `mana omlx models`. Match its context length to the oMLX model settings.
+1. Run `mana omlx key` locally to get the admin login key. Keep it private.
+   Open <http://127.0.0.1:8000/admin>, sign in, and download a model suitable for your Mac.
+2. Edit the generated `hermes/config.yaml`: set `model.default`
+   to the ID shown by `mana omlx models`, and match `model.context_length` to the
+   oMLX model settings. The tracked defaults are in [hermes/config.yaml.example](hermes/config.yaml.example).
 3. Run `mana hermes restart`, then `mana hermes` or `mana hermes dashboard`.
 
 The dashboard is at <http://127.0.0.1:9119>. `mana hermes dashboard` prints its
 locally generated login. Keep that output private.
+
+The default provider is local oMLX, but the template also configures an Ollama
+Cloud fallback. It requires `OLLAMA_API_KEY` and sends requests off-machine when
+used. For local-only LLM inference, remove `fallback_model` from the live config
+and restart Hermes. Web search and browsing still use the network.
 
 ## Commands
 
@@ -142,10 +152,14 @@ in code; runtime discovery alone does not make a service managed.
 /bin/bash tests/lifecycle.sh
 ```
 
-These tests use temporary homes and mocked process/container commands. They do
+The checks cover lifecycle regressions, version parsing, public command help,
+and local documentation file links. They use temporary homes and mocked
+process/container commands. They do
 not stop host services, read real credentials, or download dependencies. Follow
 with `mana services` and `mana doctor` for live checks. Nix activation is a separate,
 privileged step; it is not part of the test suite.
 
+Modelops commands run on the host, outside the Hermes sandbox. A Python virtual
+environment isolates dependencies, not access to host files or credentials.
 Workflow operations such as model downloading, conversion, and quantization stay
 explicit rather than becoming Mana wrappers. See the [modelops guide](modelops/README.md).

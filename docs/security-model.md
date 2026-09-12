@@ -16,6 +16,11 @@ or prompts harmless.
 The agent can still reach network services on the Mac. A host API exposed to
 Hermes is an additional capability, even when no host filesystem is mounted.
 
+This isolation applies to Hermes, not the whole workstation. Modelops commands
+run as your macOS user and can access host files, cached Hugging Face tokens, and
+other credentials available to that account. Their `uv` virtual environment only
+isolates Python dependencies. oMLX and other native apps also run on the host.
+
 ## What Is Shared
 
 The container reads/writes its named volume and explicit host mounts:
@@ -37,6 +42,11 @@ an incidental convenience. Those are explicit changes to the trust model.
 Network egress is open. Prompt-injected code can send out anything it can read.
 Avoid putting high-value cloud billing keys in the agent's environment; scope
 credentials and limits to the work you are willing to expose.
+
+The default configuration includes an Ollama Cloud fallback in addition to local
+oMLX. With valid credentials, using that fallback sends model requests off-machine.
+For local-only LLM inference, remove `fallback_model` from the live Hermes config
+and restart the container. Networked search/browser tools remain networked.
 
 The dashboard is published only on host loopback, port 9119, with authentication.
 oMLX binds `0.0.0.0:8000` for VM access and uses an API key. That bind address also

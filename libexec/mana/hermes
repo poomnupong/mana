@@ -54,6 +54,6 @@ case "${1:-chat}" in
     status)    "$RUN" status ;;
     dashboard) cmd_dashboard ;;
     logs)      exec container logs -f hermes-agent ;;
-    -h|--help) sed -n '2,15p' "$0" ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" ;;
     *) echo "Usage: mana hermes {chat|up|down|restart|rebuild|status|dashboard|logs}" >&2; exit 2 ;;
 esac

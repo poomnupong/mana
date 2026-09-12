@@ -1,13 +1,13 @@
 #!/bin/bash
-# mana — factory-reset a single imperative component
+# mana — remove a single imperative component, retaining data by default
 #
 # Scope: this ONLY tears down imperative runtime state (application bundles,
 # Apple `container` objects, on-disk caches). It NEVER edits darwin.nix /
-# flake.nix / home.nix, so the Nix layer stays idempotent — re-running
-# `mana bootstrap` (or `darwin-rebuild`) cleanly reinstalls whatever you
-# removed here. That's the "start over on one component" loop:
-#   mana uninstall omlx        # blow it away
-#   mana bootstrap             # nix puts it right back, freshly seeded
+# flake.nix / home.nix. Reinstall oMLX or Apple container with `mana bootstrap`,
+# or Hermes with `mana hermes rebuild`. Nix activation alone does not reinstall
+# imperative components. Retained data is not sanitized by reinstalling:
+#   mana uninstall omlx        # remove the app, retain models/settings
+#   mana omlx install          # reinstall the app using those settings
 #
 # Nix-managed things (CLI packages, casks, fonts) are intentionally NOT
 # handled here — remove those by editing the nix files (the declarative
@@ -48,7 +48,7 @@ run()  { # echo + execute, or just echo under --dry-run
 COMPONENT="${1:-}"
 [ -n "$COMPONENT" ] || die "Usage: mana uninstall <omlx|hermes|container> [--purge] [--keep-models] [--keep-config] [--yes] [--dry-run]"
 case "$COMPONENT" in
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
 esac
 shift || true
 

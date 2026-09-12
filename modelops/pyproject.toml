@@ -7,11 +7,8 @@ requires-python = ">=3.12,<3.13"
 # Default contract: safetensors in (HF or mlx-community), MLX safetensors out.
 # GGUF is not a supported input format here — use llama.cpp tooling instead.
 dependencies = [
-  # HuggingFace CLI (`hf download`, `hf upload`) + Rust-based fast transfers.
-  # The CLI is bundled in huggingface-hub >=1.0; hf-transfer is a separate pkg
-  # (enabled at runtime via `export HF_HUB_ENABLE_HF_TRANSFER=1`).
+  # HuggingFace CLI; its hf-xet dependency handles accelerated transfers.
   "huggingface-hub>=1.0",
-  "hf-transfer>=0.1.8",
 
   # mlx-lm: HF -> MLX format conversion, naive/mxfp8 quant as a baseline.
   # oQ (the recommended quantizer) runs inside oMLX, not here.
@@ -29,7 +26,4 @@ dependencies = [
   "heretic-llm @ git+https://github.com/p-e-w/heretic.git",
 ]
 
-# To enable the Rust-based fast download path for HuggingFace, set:
-#   export HF_HUB_ENABLE_HF_TRANSFER=1
-# in your shell (or prefix individual commands). The `hf_transfer` extra above
-# installs the dependency; the env var activates it.
+# Optional transfer tuning: HF_XET_HIGH_PERFORMANCE=1 uses more network/CPU/disk.

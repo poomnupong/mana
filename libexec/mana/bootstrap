@@ -1,11 +1,11 @@
 #!/bin/bash
 # mana — first-time bootstrap
 #
-# Idempotent. Safe to re-run. Each step skips itself when already done.
+# Re-runnable. Retains persistent data and reconciles Mana-owned settings.
 #
 # Steps:
 #   1. Sanity checks (macOS 26+ Apple silicon)
-#   2. Personalize flake.nix (username + hostname)
+#   2. Reconcile local.nix (username + hostname)
 #   3. Prompt for git identity            (skip if ~/.gitconfig has user.email)
 #   4. Install Determinate Nix              (skip if `nix` present)
 #   5. Install Homebrew                     (skip if `brew` present)
@@ -19,10 +19,20 @@
 # Usage: ./bin/mana bootstrap   (on a fresh Mac, before bin/ is on PATH)
 #        mana bootstrap         (afterwards — bin/ is added to PATH by home.nix)
 
+container_version() {
+    local pattern='^container( CLI)? version v?([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?)([[:space:]]|$)'
+    [[ "$1" =~ $pattern ]] || return 1
+    printf '%s\n' "${BASH_REMATCH[2]}"
+}
+
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 set -euo pipefail
 
 case "${1:-}" in
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
 esac
 
 # Script lives in <repo>/libexec/mana/, so the repo root is two levels up.
@@ -211,7 +221,9 @@ fi
 latest_ver="${latest_tag#v}"
 
 if command -v container >/dev/null 2>&1; then
-    current_ver="$(container --version 2>/dev/null | awk '{print $NF}' | head -n1)"
+    version_output="$(container --version)" || die "Could not read the installed Apple container version."
+    current_ver="$(container_version "$version_output")" \
+        || die "Unrecognized Apple container version: $version_output. No runtime upgrade attempted."
     if [ -n "$latest_ver" ] && [ "$current_ver" != "$latest_ver" ]; then
         log "Upgrading Apple container: $current_ver -> $latest_ver"
         if [ -x /usr/local/bin/update-container.sh ]; then
