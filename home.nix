@@ -85,6 +85,7 @@
           'rebuild:apply the current Nix configuration'
           'update:update Nix, Homebrew, and the stable oMLX app'
           'doctor:check oMLX and Hermes and optionally repair services'
+          'services:review and control managed services and Apple containers'
           'omlx:install, update, and control the oMLX app/server'
           'hermes:control or chat with the Hermes container'
           'uninstall:remove one imperative component'
@@ -99,12 +100,23 @@
             _describe 'mana command' commands
             ;;
           hermes)
-            subcommands=(chat up down rebuild status dashboard logs)
+            subcommands=(chat up down restart rebuild status dashboard logs)
             _describe 'Hermes command' subcommands
             ;;
           omlx)
             subcommands=(status install upgrade start stop restart logs models key)
             _describe 'oMLX command' subcommands
+            ;;
+          services)
+            if (( CURRENT == 3 )); then
+              subcommands=(list status start stop restart logs)
+              _describe 'service action' subcommands
+            elif (( CURRENT == 4 )); then
+              subcommands=(omlx hermes container 'container\:hermes-agent')
+              _describe 'service (or container:<id>)' subcommands
+            else
+              _arguments '--yes[confirm runtime-wide interruption]'
+            fi
             ;;
           uninstall)
             if (( CURRENT == 3 )); then
@@ -119,7 +131,8 @@
             fi
             ;;
           doctor)
-            _arguments '--fix[repair detected app, runtime, and container issues]'
+            _arguments '--fix[repair detected app, runtime, and container issues]' \
+              '--yes[confirm disruptive repairs]'
             ;;
           update)
             _arguments '--no-flake[skip updating flake inputs]' \

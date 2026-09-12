@@ -25,6 +25,7 @@ Commands:
     rebuild     Apply the current Nix configuration
     update      Update Nix, Homebrew, and the stable oMLX app
     doctor      Check oMLX and Hermes; add --fix to repair services
+    services    Review and control managed services and Apple containers
     omlx        Install, update, and control the oMLX app/server
     hermes      Control or chat with the Hermes container
     uninstall   Remove one imperative component, data-safe by default
@@ -32,6 +33,7 @@ Commands:
 Examples:
     mana help omlx
     mana omlx status
+    mana services
     mana doctor --fix
     mana hermes
     mana update
@@ -40,7 +42,7 @@ EOF
 
 command_script() {
     case "$1" in
-        bootstrap|rebuild|update|doctor|omlx|hermes|uninstall)
+        bootstrap|rebuild|update|doctor|services|omlx|hermes|uninstall)
             printf '%s/%s\n' "$COMMAND_DIR" "$1"
             ;;
         *)

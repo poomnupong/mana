@@ -4,7 +4,7 @@
 # Default run only reports. Pass --fix to remove stale launch agents and
 # restore the app-managed server and containerized Hermes agent.
 #
-# Usage: mana doctor [--fix]
+# Usage: mana doctor [--fix [--yes]]
 
 set -uo pipefail
 
@@ -15,19 +15,34 @@ USER_CLI="$HOME/.omlx/bin/omlx"
 HERMES_RUN="$REPO_DIR/hermes/run.sh"
 PORT=8000
 NIX_LABEL="org.nixos.omlx"
-NIX_PLIST="$HOME/Library/LaunchAgents/${NIX_LABEL}.plist"
 BREW_LABEL="homebrew.mxcl.omlx"
-BREW_PLIST="$HOME/Library/LaunchAgents/${BREW_LABEL}.plist"
-LOG="$HOME/Library/Application Support/oMLX/logs/server.log"
 issues=0
 
 FIX=0
-case "${1:-}" in
-    --fix) FIX=1 ;;
-    -h|--help) sed -n '2,7p' "$0"; exit 0 ;;
-    "") ;;
-    *) printf "Unknown option: %s (try --help)\n" "$1" >&2; exit 2 ;;
-esac
+ASSUME_YES=0
+for argument in "$@"; do
+    case "$argument" in
+        --fix) FIX=1 ;;
+        --yes) ASSUME_YES=1 ;;
+        -h|--help)
+            sed -n '2,7p' "$0"
+            printf '\n--fix warns and asks before disruptive repairs. --yes skips that prompt.\n'
+            exit 0 ;;
+        *) printf "Unknown option: %s (try --help)\n" "$argument" >&2; exit 2 ;;
+    esac
+done
+if [ "$ASSUME_YES" -eq 1 ] && [ "$FIX" -eq 0 ]; then
+    printf '%s\n' '--yes requires --fix.' >&2
+    exit 2
+fi
+if [ "$FIX" -eq 1 ]; then
+    printf 'Warning: repairs may install oMLX, remove legacy services, stop ANY listener on port 8000, and restart oMLX/Hermes. Active work may be interrupted. Persistent data is kept.\n' >&2
+    if [ "$ASSUME_YES" -eq 0 ]; then
+        printf 'Proceed? [y/N] ' >&2
+        read -r reply || exit 1
+        case "$reply" in y|Y|yes|YES) ;; *) printf 'Cancelled.\n' >&2; exit 1 ;; esac
+    fi
+fi
 
 ok()     { printf "\033[1;32m  ok\033[0m   %s\n" "$*"; }
 bad()    { printf "\033[1;31m fail\033[0m  %s\n" "$*"; issues=$((issues + 1)); }
@@ -101,8 +116,11 @@ if [ -n "$holder_pid" ]; then
     else
         bad "Port $PORT held outside oMLX.app (pid $holder_pid: $holder_cmd)."
         if [ "$FIX" -eq 1 ]; then
-            kill "$holder_pid" >/dev/null 2>&1 || true
-            fixmsg "stopped the conflicting listener on :$PORT"
+            if kill "$holder_pid"; then
+                fixmsg "sent termination to the conflicting listener on :$PORT"
+            else
+                info "Could not stop the conflicting listener."
+            fi
         fi
     fi
 else
@@ -120,20 +138,16 @@ if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
         ok "API http://127.0.0.1:$PORT -> HTTP 200 (${count:-?} model(s) available)."
     else
         bad "API http://127.0.0.1:$PORT -> HTTP ${code:-000}."
-        [ -f "$LOG" ] && info "Last log: $(tail -n1 "$LOG" 2>/dev/null)"
+        info "Inspect server errors with 'mana omlx logs'."
     fi
 else
     bad "No readable ~/.omlx/settings.json - run mana bootstrap."
 fi
 
 if [ "$FIX" -eq 1 ] && [ -d "$APP" ]; then
-    cli="$USER_CLI"
-    [ -x "$cli" ] || cli="$APP_CLI"
-    if [ -x "$cli" ]; then
-        "$cli" restart >/dev/null 2>&1 \
-            && fixmsg "restarted the app-managed server" \
-            || info "Restart failed; open oMLX.app to inspect its status."
-    fi
+    "$REPO_DIR/libexec/mana/omlx" restart \
+        && fixmsg "restarted the app-managed server" \
+        || info "Restart failed; open oMLX.app to inspect its status."
 fi
 
 if ! command -v container >/dev/null 2>&1; then
@@ -157,25 +171,13 @@ else
     fi
 
     if [ "$container_ready" -eq 1 ]; then
-        hermes_state="missing"
-        if command -v jq >/dev/null 2>&1; then
-            hermes_state="$(container list --all --format json 2>/dev/null \
-                | jq -r --arg id hermes-agent \
-                    '[.[] | select(.configuration.id == $id)][0].status.state // [.[] | select(.configuration.id == $id)][0].status // "missing"' \
-                    2>/dev/null)"
-        fi
-
-        if [ "$hermes_state" = "running" ]; then
-            ok "Hermes container is running."
+        if "$HERMES_RUN" status; then
+            ok "Hermes container and required endpoints are responding."
         else
-            if [ "$hermes_state" = "missing" ]; then
-                bad "Hermes container is missing."
-            else
-                bad "Hermes container is not running (state: $hermes_state)."
-            fi
+            bad "Hermes is missing, stopped, or unhealthy."
             if [ "$FIX" -eq 1 ]; then
-                if "$HERMES_RUN" up >/dev/null; then
-                    fixmsg "restored the Hermes container"
+                if "$HERMES_RUN" restart; then
+                    fixmsg "restored Hermes health"
                 else
                     info "Hermes repair failed; run 'mana hermes up' for details."
                 fi
@@ -185,11 +187,11 @@ else
 fi
 
 echo
-if [ "$issues" -eq 0 ]; then
+if [ "$FIX" -eq 1 ]; then
+    printf 'Repair pass finished. Rechecking without repairs...\n\n'
+    exec "$0"
+elif [ "$issues" -eq 0 ]; then
     printf "\033[1;32mAll checks passed.\033[0m\n"
-    exit 0
-elif [ "$FIX" -eq 1 ]; then
-    printf "\033[1;33mAttempted repairs for %d issue(s).\033[0m Re-run 'mana doctor' to confirm.\n" "$issues"
     exit 0
 else
     printf "\033[1;31mFound %d issue(s).\033[0m Re-run with '--fix' to repair automatically.\n" "$issues"

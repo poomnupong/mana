@@ -52,7 +52,7 @@ app_version() {
 api_key() {
     [ -f "$SETTINGS" ] || return 1
     command -v jq >/dev/null 2>&1 || return 1
-    jq -r '.auth.api_key // empty' "$SETTINGS"
+    jq -er '.auth.api_key // empty | select(type == "string" and length > 0)' "$SETTINGS"
 }
 
 release_info() {
@@ -190,13 +190,14 @@ cmd_status() {
     code="$(curl -s -m 5 -o /dev/null -w '%{http_code}' \
         -H "Authorization: Bearer ${key:-}" "http://127.0.0.1:$PORT/v1/models" 2>/dev/null || true)"
     echo "  http://127.0.0.1:$PORT/v1/models -> HTTP ${code:-000}"
+    [ "$code" = "200" ]
 }
 
 cmd_lifecycle() {
     local cli command="$1" listener_pid=""
     cli="$(omlx_cli)" || die "oMLX.app is not installed. Run: mana omlx install"
     if ! pgrep -f '/oMLX.app/Contents/MacOS/oMLX' >/dev/null 2>&1; then
-        listener_pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -n1)"
+        listener_pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -n1 || true)"
         if [ -n "$listener_pid" ] && lsof -p "$listener_pid" 2>/dev/null \
                 | awk '$4 == "txt" { print $9 }' | grep -q '^/Applications/oMLX.app/'; then
             kill "$listener_pid" >/dev/null 2>&1 || true
@@ -214,7 +215,7 @@ cmd_lifecycle() {
 cmd_models() {
     local key
     key="$(api_key)" || { echo "No API key in $SETTINGS." >&2; exit 1; }
-    curl -s -m 5 -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/v1/models" \
+    curl -fsS -m 5 -H "Authorization: Bearer $key" "http://127.0.0.1:$PORT/v1/models" \
         | jq -r '.data[].id' 2>/dev/null || { echo "Server not answering on :$PORT." >&2; exit 1; }
 }
 

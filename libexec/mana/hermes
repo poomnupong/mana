@@ -9,8 +9,9 @@
 #   chat       interactive chat (default — exec into the container)
 #   up         create & start the container (with SearXNG built in)
 #   down       stop the container
+#   restart    restart without updating the image (reload config)
 #   rebuild    rebuild the toolbox image + restart
-#   status     show container status
+#   status     show container state and endpoint health
 #   dashboard  open the browser GUI (http://localhost:9119)
 #   logs       tail -f container logs
 
@@ -20,6 +21,7 @@ REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN="$REPO_DIR/hermes/run.sh"
 
 cmd_chat() {
+    "$RUN" up
     exec container exec -it hermes-agent bash -c \
         'source /opt/hermes/.venv/bin/activate && hermes'
 }
@@ -33,12 +35,12 @@ cmd_dashboard() {
     "$RUN" up >/dev/null
 
     local user pass
-    user="$(grep -E '^HERMES_DASHBOARD_BASIC_AUTH_USERNAME=' "$envf" 2>/dev/null | head -1 | cut -d= -f2-)"
-    pass="$(grep -E '^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=' "$envf" 2>/dev/null | head -1 | cut -d= -f2-)"
+    user="$(awk -F= '/^HERMES_DASHBOARD_BASIC_AUTH_USERNAME=/ {sub(/^[^=]*=/, ""); print; exit}' "$envf")"
+    pass="$(awk -F= '/^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=/ {sub(/^[^=]*=/, ""); print; exit}' "$envf")"
 
     echo "Hermes dashboard: $url"
     [ -n "$user" ] && echo "  login:  ${user} / ${pass}"
-    echo "  change: edit HERMES_DASHBOARD_BASIC_AUTH_PASSWORD in hermes/.env, then 'mana hermes rebuild'"
+    echo "  change: edit HERMES_DASHBOARD_BASIC_AUTH_PASSWORD in hermes/.env, then 'mana hermes restart'"
     echo "  note:   first load may take a moment while the UI builds."
     command -v open >/dev/null 2>&1 && open "$url" || true
 }
@@ -47,10 +49,11 @@ case "${1:-chat}" in
     chat)      cmd_chat ;;
     up)        "$RUN" up ;;
     down)      "$RUN" down ;;
+    restart)   "$RUN" restart ;;
     rebuild)   "$RUN" rebuild ;;
     status)    "$RUN" status ;;
     dashboard) cmd_dashboard ;;
     logs)      exec container logs -f hermes-agent ;;
-    -h|--help) sed -n '2,14p' "$0" ;;
-    *) echo "Usage: mana hermes {chat|up|down|rebuild|status|dashboard|logs}" >&2; exit 1 ;;
+    -h|--help) sed -n '2,15p' "$0" ;;
+    *) echo "Usage: mana hermes {chat|up|down|restart|rebuild|status|dashboard|logs}" >&2; exit 2 ;;
 esac

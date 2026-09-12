@@ -1,720 +1,143 @@
 # Mana
 
-**MAc-Nix-Agent: one command for an Apple-silicon local AI workstation.**
+**MAc-Nix-Agent: an Apple-silicon AI workstation managed as code.**
 
-This repo is a declarative, end-to-end recipe for turning a fresh M-series Mac into a self-contained AI workstation:
+Nix manages the system and shell, Homebrew supplies declared GUI apps, the
+official oMLX app serves local models, and Hermes runs inside an Apple
+`container` microVM with search, browser tools, and a web dashboard.
 
-- **Nix + nix-darwin + Home Manager** — reproducible system + user environment (CLI tools, fonts, shell, launchd services)
-- **Homebrew** — declarative casks (VS Code, Ollama, LM Studio, etc.) managed by nix-darwin
-- **[oMLX](https://github.com/jundot/omlx)** — official prebuilt macOS app, with a multi-model MLX inference server and OpenAI-compatible API on `localhost:8000`
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** in an Apple `container` microVM — chat-driven coding agent with built-in SearXNG, browser, and shell tools, talking to oMLX over the vmnet bridge
+Requires Apple silicon and macOS 26+. Models are downloaded separately.
 
-The goal: clone the repo, run `./bin/mana bootstrap`, and have a working `mana hermes` chat against a locally hosted MLX model on the same Mac. Everything is reproducible — wipe the machine, re-run the script, get the same setup. No cloud dependency by default; cloud LLMs are a one-line config swap.
+**Security boundary:** Hermes can execute arbitrary code inside its VM and
+read/write its explicit host mounts. It does not get your home directory,
+SSH keys, or authenticated desktop browser. Network access is unrestricted,
+and rebuilds preserve persistent state. Read [the security model](docs/security-model.md).
 
-> **Philosophy.** This repo is meant to **accelerate your learning** of the Apple-silicon AI toolchain, not hide it from you. Lifecycle plumbing (`mana hermes up`, `darwin-rebuild switch`) is wrapped because it's plumbing. Workflow commands you should understand — model downloads, format conversion, abliteration, quantization — are **deliberately not wrapped**. See [`modelops/`](modelops/README.md) for the modelops tutorial.
-
-> **⚠️ Read first — what this is, and what it isn't.** This repo runs Hermes — an autonomous, web-connected, self-modifying agent — **inside an Apple `container` microVM on purpose**. The sandbox *is* the product: the agent gets a few explicit bind mounts and **cannot** see your real `~`, your SSH/cloud keys, your OneDrive/iCloud, or your authenticated browser — so you can let it off the leash and reset it with `mana hermes rebuild`. The trade-off: it can't touch your real projects or drive your desktop. If you instead want an assistant that operates your actual machine and corporate apps, that's **host-native Hermes** — a deliberately different, higher-trust tool, not this repo. The new **Hermes Desktop app is just a GUI front-end and changes neither posture** (attach it to the container and the jail stays intact). Before adopting — especially the limits (open network egress, `.env` is readable by the agent, young VM runtime) and the "don't drift into host-native by accident" discipline — read **[docs/security-model.md](docs/security-model.md)**.
-
-## Quick start
-
-Fresh Mac? One bootstrap command after cloning:
-
-```bash
-mkdir -p ~/repo && git clone https://github.com/poomnupong/mana.git ~/repo/mana
-cd ~/repo/mana && ./bin/mana bootstrap
-```
-
-`mana bootstrap` is idempotent — safe to re-run. It installs Nix, Homebrew, the Apple `container` runtime, and the latest stable official oMLX app, applies the nix-darwin flake, seeds oMLX (host + API key), and brings up the Hermes container.
-
-> **Clone it to `~/repo/mana`.** [home.nix](home.nix) hard-codes `~/repo/mana/bin` onto your PATH — deliberately, with no path-detection wrapper, so the code stays easy to read. The first run always works from anywhere (you invoke it by path: `./bin/mana bootstrap`). For the bare `mana` command to resolve afterward, keep the repo here or change that single PATH line if you clone elsewhere.
->
-> **After the first bootstrap, open a new terminal** (or run `exec zsh`). `mana bootstrap` runs as a child process, so it can't add `bin/` to the PATH of the shell you launched it from — that only takes effect in shells started after the rebuild. In the same terminal, use `./bin/mana <command>`.
-
-> **Repo commands.** [`bin/mana`](bin/mana) is the sole public executable; command implementations live privately under `libexec/mana/`. [home.nix](home.nix) puts `bin/` on your PATH and supplies completion for `mana <TAB>` and nested commands:
->
-> | Command | What |
-> |---------|------|
-> | `mana [help]` | Show all available commands. Use `mana help <command>` for detailed help. |
-> | `mana bootstrap` | First-time setup (idempotent). On a fresh Mac run `./bin/mana bootstrap` (PATH isn't wired yet). |
-> | `mana rebuild` | Apply local Nix configuration changes without updating dependencies. |
-> | `mana update` | Bump flake inputs + upgrade Homebrew **verbosely** + `darwin-rebuild` + update/restart the stable oMLX app. |
-> | `mana doctor [--fix]` | Diagnose oMLX, the Apple container runtime, and Hermes. `--fix` repairs services and recreates a missing Hermes container. |
-> | `mana omlx <cmd>` | oMLX app install/control: `status`/`install`/`upgrade`/`start`/`stop`/`restart`/`logs`/`models`/`key`. |
-> | `mana hermes [cmd]` | Hermes control: bare = `chat`; also `up`/`down`/`rebuild`/`status`/`dashboard`/`logs`. |
-> | `mana uninstall <c>` | Factory-reset one imperative component (`omlx`/`hermes`/`container`). Data-safe by default; `--purge` removes data, `--keep-models`/`--keep-config` spare parts of it. Never edits the Nix files. |
-
-> **Note:** `mana bootstrap` writes a gitignored `local.nix` with your `username` and `hostname`. Lifecycle commands build a temporary Nix source from tracked files plus `local.nix`, so normal `git status` stays clean and ignored secrets/runtime data stay out of the Nix store.
-
-Bootstrap creates local state without staging it:
-
-| Local artifact | Purpose | Recreated when missing? | Preserved by updates/rebuilds? |
-|---|---|:---:|:---:|
-| `local.nix` | This Mac's username and hostname | By `mana bootstrap` | Yes |
-| `hermes/.env` | API keys and dashboard credentials (`0600`) | By `mana bootstrap` | Yes |
-| `hermes/config.yaml` | Live Hermes settings, seeded from the tracked example | By `mana hermes up` | Yes |
-| `hermes/data/` | Memories and host-backed agent state | By `mana hermes up` | Yes |
-| `hermes/workspace/` | Files exchanged with the agent | By `mana hermes up` | Yes |
-| `hermes-data` volume | Sessions, plugins, cron state, caches, and container-side state | By `mana hermes up` | Yes; deleted only by `mana uninstall hermes --purge` |
-| `~/.omlx/settings.json` | oMLX server settings and API key (`0600`) | By `mana bootstrap`/oMLX | Yes |
-| `~/.omlx/models/` | Downloaded model weights | By the user/oMLX | Yes |
-
-The repository does not ship model weights. Bootstrap starts the oMLX admin UI and Hermes dashboard; on a new Mac, the remaining user action is choosing a model that fits the machine and downloading it from <http://127.0.0.1:8000/admin>.
-
-Already bootstrapped? Day-to-day commands:
-
-```bash
-cd ~/repo/mana
-mana help                               # discover commands and detailed help
-mana rebuild                            # apply edits to tracked Nix files
-mana update                             # flake/brew update + rebuild + stable oMLX app update
-mana doctor                             # health-check the full local stack (add --fix to repair)
-mana hermes up                          # start Hermes agent container
-mana hermes                             # interactive chat (bare = chat)
-```
-
-### Migrating from mac-nix-agent
-
-This release is an immediate breaking rename: `mna` and every `mna-*` command
-are removed. Existing checkouts can move to the new repository and command in
-one pass:
-
-```bash
-cd ~/repo/mac-nix-agent
-git pull
-cd ..
-mv mac-nix-agent mana
-cd mana
-git remote set-url origin git@github.com:poomnupong/mana.git
-./bin/mana rebuild
-./bin/mana hermes rebuild
-exec zsh
-```
-
-The repository move preserves ignored local files. `~/.omlx` lives outside the
-repository, so downloaded models, settings, and the API key remain in place.
-Rebuilding Hermes recreates its absolute bind mounts with the new `~/repo/mana`
-path.
-
-## Table of Contents
-
-- [Read first — what this is, and what it isn't](docs/security-model.md)
-- [Quick start](#quick-start)
-- [What this manages](#what-this-manages)
-- [Hermes Agent (containerized)](#hermes-agent-containerized)
-  - [Architecture](#architecture)
-  - [Features](#features)
-  - [LLM providers](#llm-providers)
-  - [Browser GUI (built-in dashboard)](#browser-gui-built-in-dashboard)
-  - [Directory layout](#directory-layout)
-- [Local services](#local-services)
-- [First-time setup](#first-time-setup)
-- [Day-to-day usage](#day-to-day-usage)
-- [Troubleshooting](#troubleshooting)
-- [Backup & restore](#backup--restore)
-- [Pushing to GitHub](#pushing-to-github)
-
----
-
-## What this manages
-
-| Layer | Tool | What |
-|-------|------|------|
-| **System** | nix-darwin | launchd services, Homebrew casks, Nix settings |
-| **User** | Home Manager | CLI packages, shell, starship, tmux, git, fonts |
-| **Manual** | You | VS Code extensions (GitHub Sync), Terminal.app theme, macOS preferences |
-
----
-
-## Hermes Agent (containerized)
-
-A self-contained AI coding agent running in an [Apple Container](https://developer.apple.com/documentation/virtualization) microVM (macOS 26+). One container bundles Hermes, SearXNG web search, and Camofox browser — no external dependencies beyond an LLM.
-
-### Architecture
-
-```
-┌─────────────────────── macOS Host ───────────────────────┐
-│                                                          │
-│  oMLX / Ollama / LM Studio        repo: mana/   │
-│  (:8000, Metal GPU)                 ├─ hermes/           │
-│        ▲                            │   ├─ config.yaml   │
-│        │ OpenAI-compat API          │   ├─ .env          │
-│        │                            │   ├─ Dockerfile    │
-│        │                            │   └─ entrypoint.sh │
-│        │                            └─ modelops/         │
-│  ┌─────┼──── Apple Container VM ────────────────────┐    │
-│  │     │     hermes-agent                           │    │
-│  │     │     4 CPU · 8 GB RAM    ◀── mounts         │    │
-│  │  ┌──┴──────────┐                                 │    │
-│  │  │ Hermes CLI  │ ◀── config.yaml                 │    │
-│  │  │             │ ◀── .env                        │    │
-│  │  └──┬──────────┘                                 │    │
-│  │     │ tool calls                                 │    │
-│  │     ├──▶ SearXNG    (:8080)                      │    │
-│  │     ├──▶ Camofox    (:9377)                      │    │
-│  │     ├──▶ Terminal   (local bash)                 │    │
-│  │     └──▶ Dashboard  (:9119)                      │    │
-│  │                                                  │    │
-│  │  /opt/data/memories  ◀── hermes/data/memories/   │    │
-│  │  /opt/data/workspace ◀── hermes/workspace/       │    │
-│  └──────────────────────────────────────────────────┘    │
-│                                                          │
-│  OR: Ollama Cloud / OpenAI / Together / Groq (no GPU)    │
-└──────────────────────────────────────────────────────────┘
-```
-
-### Features
-
-- **Single container** — SearXNG, Camofox browser, and terminal all run inside one VM alongside Hermes. No Docker Compose, no multi-container networking.
-- **Flexible LLM backend** — works with local inference (oMLX, Ollama, LM Studio, vLLM) or cloud APIs (Ollama Cloud, OpenAI, Together, Groq). Edit the gitignored live `config.yaml` and `.env`; defaults live in `config.yaml.example` and `.env.example`.
-- **Private memory** — `hermes/data/memories/` is **gitignored**: the agent learns about you locally and that knowledge never leaks to a (potentially public) repo. Back it up out-of-band (see [Backup & restore](#backup--restore)).
-- **Self-sufficient toolbox** — Node.js, npm, pip available inside the container. Hermes can install its own packages at runtime.
-- **Host-mounted config** — the live `config.yaml`, `.env`, `Dockerfile`, and `entrypoint.sh` are bind-mounted, so changes apply without rebuilding the image. Hermes may rewrite `config.yaml`, so it is local runtime state rather than tracked source.
-- **Sandboxed execution** — terminal backend is `local` (bash inside the VM), so Hermes can run arbitrary commands without touching the host.
-- **One-command lifecycle** — `mana hermes up` / `down` / `rebuild` manage everything; bare `mana hermes` opens a chat.
-
-### First-time setup
-
-```bash
-cd ~/repo/mana/hermes
-cp .env.example .env
-vim .env   # set API keys for your chosen provider
-```
-
-### LLM providers
-
-| Provider | Setup | GPU required? |
-|----------|-------|:---:|
-| **oMLX** (default) | `mana bootstrap` installs the official app; it runs on `:8000`. Set `base_url` in `config.yaml` | Yes (Metal) |
-| **Ollama** (local) | `ollama serve` on host. Point `base_url` to `host.container.internal:11434` | Yes |
-| **LM Studio / vLLM** | Start server on host, point `base_url` accordingly | Yes |
-| **Ollama Cloud** | Set `provider: ollama-cloud` in `config.yaml`, add `OLLAMA_API_KEY` to `.env` | No |
-| **OpenAI / Together / Groq** | Set `provider: custom`, `base_url` to the API endpoint, `OPENAI_API_KEY` (or your provider's key env var) in `.env` | No |
-
-### Start / stop
-
-```bash
-mana hermes up         # create & start the container (with SearXNG built in)
-mana hermes down       # stop the container
-mana hermes rebuild    # rebuild image + restart
-mana hermes dashboard  # open the browser GUI (http://localhost:9119)
-mana hermes logs       # tail container logs
-```
-
-Home Manager installs a user launch agent that runs the same idempotent
-`mana hermes up` workflow at login. After a reboot, logging in starts the
-Apple container runtime and starts or recreates `hermes-agent`; persistent
-volume and host-mounted state are preserved. Startup output is written to
-`~/Library/Logs/mana-hermes.log`.
-
-### Use Hermes
-
-```bash
-mana hermes           # interactive chat (bare = chat; same as `mana hermes chat`)
-```
-
-### Browser GUI (built-in dashboard)
-
-Prefer a visual interface to the terminal? The container also runs Hermes' **web dashboard** — open it with:
-
-```bash
-mana hermes dashboard            # ensures the container is up, then opens the browser
-```
-
-It serves the **same containerized agent** as `mana hermes` chat ([docs](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard)), so sessions, memory, and skills are shared. Over the terminal it adds:
-
-- **Embedded chat tab** — the full Hermes TUI in the browser (slash commands, model picker, tool-call cards, streaming).
-- **Form editors** for `config.yaml` (150+ fields) and `.env` API keys — no hand-editing YAML.
-- **Sessions browser** with full-text search and export; **Skills**, **MCP**, **Analytics**, **Cron**, and **Logs** panes.
-
-It runs **entirely inside the microVM** (published only to `127.0.0.1:9119`) and **installs nothing on your Mac** — the agent stays jailed; your browser just talks to the loopback port. Binding inside the VM engages Hermes' auth gate, so `mana bootstrap` seeds a readable username/password into `hermes/.env`:
-
-- `mana hermes dashboard` prints the current login each time.
-- **Change it:** edit `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` in `hermes/.env`, then `mana hermes rebuild`. Keep `HERMES_DASHBOARD_BASIC_AUTH_SECRET` stable so logins survive restarts.
-
-> **Native Hermes Desktop app?** This repo deliberately **doesn't install it** — the native app lays down a host-side `~/.hermes` agent runtime, which is exactly the host-native footprint the container model avoids ([why](docs/security-model.md#hermes-desktop-app-released-2026--does-it-change-any-of-this)). The built-in browser dashboard above already covers the GUI use case with zero host install. If you still want the native app, install it yourself ([Hermes Desktop](https://hermes-agent.nousresearch.com/desktop)) and point it at **this container's backend** instead of its own: **Settings → Gateway → Remote gateway**, Remote URL `http://127.0.0.1:9119`, then sign in with the username/password from `hermes/.env`. That keeps the agent jailed in the VM and the desktop app a pure front-end.
-
-### Directory layout
-
-```
-hermes/
-├── config.yaml          # Live Hermes config (gitignored)
-├── config.yaml.example  # Tracked defaults; seeds config.yaml on first start
-├── .env                 # API keys, dashboard login, service URLs (gitignored)
-├── .env.example         # Template for .env
-├── Dockerfile           # Builds hermes-toolbox image
-├── entrypoint.sh        # Starts SearXNG + Camofox + dashboard, then idles
-├── run.sh               # Lifecycle script (up/down/rebuild/status)
-├── searxng/
-│   └── settings.yml     # SearXNG config
-├── data/
-│   └── memories/        # Persistent agent memory (gitignored)
-└── workspace/           # Agent scratch files (gitignored)
-```
-
----
-
-## Local services
-
-Local inference services use negligible resources when idle — GPU (Metal) is only engaged during active inference. oMLX is owned by its official macOS app; optional Nix launchd services remain defined in `darwin.nix`. **Ollama, Open-WebUI, and ComfyUI are currently commented out.** Uncomment the relevant blocks in `darwin.nix` and run `mana rebuild` to enable them.
-
-| Service | URL | Port | Log | Status |
-|---------|-----|------|-----|--------|
-| oMLX admin | http://127.0.0.1:8000/admin | 8000 | `~/Library/Application Support/oMLX/logs/server.log` | `mana omlx status` |
-| ComfyUI | http://127.0.0.1:8188 | 8188 | `~/Library/Logs/comfyui.log` | commented out |
-| Ollama API | http://127.0.0.1:11434 | 11434 | `~/Library/Logs/ollama.log` | commented out |
-| Open-WebUI | http://127.0.0.1:8080 | 8080 | `~/Library/Logs/open-webui.log` | commented out |
-
-### oMLX — bind address & API key
-
-oMLX is installed from the upstream stable, notarized DMG. The app embeds Python, MLX, and the native kernels, so installation and updates do not build from source or download dependencies from PyPI. The app owns the server lifecycle and installs a CLI shim at `~/.omlx/bin/omlx`. Configuration lives entirely in `~/.omlx/settings.json`:
-
-- `.server.host = "0.0.0.0"` — so the Apple Container VM can reach it at `192.168.64.1:8000`
-- `.auth.api_key = "omlx-sk-…"` — required for Bearer auth (also editable from the admin UI → API Keys)
-
-`mana bootstrap` seeds both on first run and writes the same key into `hermes/.env` as `OMLX_API_KEY`.
-
-#### Binary installation and stable updates
-
-`mana omlx install` and `mana omlx upgrade` use the same idempotent flow:
-
-1. Query the upstream GitHub releases API and reject drafts, prereleases, and version tags containing `rc`, `dev`, `alpha`, or `beta`. If the API is unavailable or rate-limited, use the public releases feed as the stable-version fallback.
-2. Select the official DMG whose filename supports the current macOS major version. No Python package, compiler, Homebrew formula, or PyPI download is involved.
-3. Read the installed version from `/Applications/oMLX.app/Contents/Info.plist`. If it matches the newest stable version, skip the download and installation.
-4. Otherwise download the DMG to a temporary directory, mount it read-only, stage `oMLX.app`, verify the full code signature with `codesign`, and require a successful Gatekeeper assessment from `spctl` before replacing anything.
-5. Stop the old app-managed server, replace `/Applications/oMLX.app` through a staging path, and remove the superseded Homebrew formula if it is still present.
-6. Leave `~/.omlx` untouched, preserving downloaded models, server settings, model settings, and the API key. Bootstrap then reconciles the bind address and shared Hermes API key and restarts the app-managed server.
-
-Run `mana omlx upgrade` to check only oMLX. Run `mana update` to update Homebrew and Nix first, activate nix-darwin, check the same stable oMLX channel, and restart the server. The app's built-in stable updater remains available as a one-click alternative.
-
-If `/Applications` requires administrator access, the command displays `Administrator Password:` and waits for you to type your macOS password directly into the terminal. Input is intentionally hidden by macOS; the script never reads, stores, pipes, or supplies the password. If the installed version already matches the stable release, no password is needed.
-
-### Download your first model
-
-`mana bootstrap` leaves oMLX running but **with no model loaded** — the repo doesn't ship weights. Pull one from the admin UI:
-
-1. Open <http://127.0.0.1:8000/admin> and log in with the key from `~/.omlx/settings.json` (`jq -r .auth.api_key ~/.omlx/settings.json`).
-2. Go to **Models → Download** and paste a Hugging Face repo ID. Pick a Gemma 4 MLX `mxfp8` build that fits your Mac's unified memory — leave at least ~8 GB headroom for the OS, KV cache at 32k, and any other apps:
-
-   | Hugging Face repo | Type | ~Disk | Min RAM | Comfortable on |
-   |---|---|---:|---:|---:|
-   | [`mlx-community/gemma-4-e2b-it-mxfp8`](https://huggingface.co/mlx-community/gemma-4-e2b-it-mxfp8) | dense (2B-effective) | ~5 GB | 8 GB | 16 GB |
-   | [`mlx-community/gemma-4-e4b-it-mxfp8`](https://huggingface.co/mlx-community/gemma-4-e4b-it-mxfp8) | dense (4B-effective) | ~7 GB | 16 GB | 24 GB+ |
-   | [`mlx-community/gemma-4-26b-a4b-it-mxfp8`](https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-mxfp8) | MoE (26B total / 4B active) | ~28 GB | 36 GB | 48 GB+ |
-   | [`mlx-community/gemma-4-31b-it-mxfp8`](https://huggingface.co/mlx-community/gemma-4-31b-it-mxfp8) | dense | ~33 GB | 48 GB | 64 GB+ |
-
-   **Picking by Mac RAM** (assumes the model is the only large workload — close LM Studio, ComfyUI, large IDE projects, etc.):
-
-   - **8 GB:** `gemma-4-e2b-it-mxfp8` only, and this model is impractical here — Hermes Agent refuses to start below a 64K context window, whose KV cache won't fit in 8 GB. Treat 16 GB as the realistic floor.
-   - **16 GB:** `gemma-4-e4b-it-mxfp8` is the sweet spot; `e2b` for snappier responses.
-   - **24–32 GB:** `gemma-4-e4b-it-mxfp8` reliably; `gemma-4-26b-a4b-it-mxfp8` works but expect swapping under long contexts — keep the window at the 64k floor and close other heavy apps.
-   - **36–48 GB:** `gemma-4-26b-a4b-it-mxfp8` is the default pick. MoE keeps active compute small while quality stays near 31B-dense.
-   - **64 GB+:** Any of them. `gemma-4-31b-it-mxfp8` for strongest single-pass quality; `gemma-4-26b-a4b-it-mxfp8` for faster throughput.
-
-  The pre-configured default in [`hermes/config.yaml.example`](hermes/config.yaml.example) is `gemma-4-31b-it-mxfp8`. After bootstrap, edit the generated `hermes/config.yaml` if you pick a different variant.
-
-3. Hit **Download** and wait. Progress is visible in the UI; files land under `~/.omlx/models/`.
-4. Click **Load** on the new model. Verify it's serving:
-
-   ```bash
-   KEY=$(jq -r .auth.api_key ~/.omlx/settings.json)
-   curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8000/v1/models | jq '.data[].id'
-   ```
-
-5. If the returned ID doesn't match `model.default` in the generated `hermes/config.yaml`, update it, then `mana hermes rebuild`.
-6. Optionally tweak that model's `max_context_window` — see [oMLX — context window](#omlx--context-window) below. Smaller-RAM Macs should also lower `model.context_length` to match.
-
-Once a model is loaded and `hermes/config.yaml` points at it, `mana hermes` chats work end-to-end.
-
-### oMLX — context window
-
-`hermes/config.yaml`'s `model.context_length` (65536) caps what Hermes sends to oMLX. On the oMLX side, the effective ceiling is the **per-model** `max_context_window` in `~/.omlx/model_settings.json`, falling back to the **global** `.sampling.max_context_window` in `~/.omlx/settings.json`. `mana bootstrap` pins the global fallback to 65536 so any freshly downloaded model works out of the box at 64k.
-
-> **Why 64k and not 32k?** Hermes Agent enforces a **hard 64,000-token minimum** and refuses to initialize below it (`Model … has a context window of 32,768 tokens, which is below the minimum 64,000 required`). Its system prompt, tool schemas, and memory consume a large slice of the window, so a smaller one isn't permitted regardless of task size. Both the config value and the oMLX cap must therefore stay ≥ 64k.
-
-Per-model overrides are **your call** — there's no `omlx` CLI for this, and the repo deliberately doesn't pre-pin settings for models it doesn't ship. To override:
-
-- **Recommended:** Admin UI → Models → `<model>` → Settings → set `max_context_window` (and `max_tokens`).
-- **Programmatic** (admin endpoints use a session cookie, not Bearer auth):
-
-  ```bash
-  KEY=$(jq -r .auth.api_key ~/.omlx/settings.json)
-  JAR=$(mktemp)
-  curl -s -c "$JAR" -X POST "http://127.0.0.1:8000/admin/api/login" \
-    -H "Content-Type: application/json" -d "{\"api_key\":\"$KEY\"}" >/dev/null
-  curl -sX PUT -b "$JAR" "http://127.0.0.1:8000/admin/api/models/<model-id>/settings" \
-    -H "Content-Type: application/json" \
-    -d '{"max_context_window": 65536, "max_tokens": 8192}' | jq
-  rm -f "$JAR"
-  ```
-
-When raising the window above 64k, also bump `model.context_length` in the generated `hermes/config.yaml` to match (it must stay ≤ the oMLX value, and ≥ the 64k Hermes floor).
-
-Verify:
-
-```bash
-KEY=$(jq -r .auth.api_key ~/.omlx/settings.json)
-curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8000/v1/models    | head
-curl -s -H "Authorization: Bearer $KEY" http://192.168.64.1:8000/v1/models | head
-```
-
-Rotate the key:
-
-```bash
-NEW="omlx-sk-$(openssl rand -hex 24)"
-jq --arg k "$NEW" '.auth.api_key = $k' ~/.omlx/settings.json > /tmp/s && mv /tmp/s ~/.omlx/settings.json
-mana omlx restart
-sed -i.bak "s|^OMLX_API_KEY=.*|OMLX_API_KEY=$NEW|" ~/repo/mana/hermes/.env && rm ~/repo/mana/hermes/.env.bak
-mana hermes down && mana hermes up
-```
-
-App and server control:
-
-```bash
-mana omlx status
-mana omlx start
-mana omlx stop
-mana omlx restart
-mana omlx upgrade       # latest stable official DMG
-```
-
-### Controlling services
-
-```bash
-# Stop a service
-launchctl stop gui/$(id -u)/org.nixos.ollama
-
-# Start a service
-launchctl start gui/$(id -u)/org.nixos.ollama
-
-# Check status
-launchctl print gui/$(id -u)/org.nixos.ollama
-```
-
-Replace `ollama` with `comfyui` or `open-webui` as needed.
-
-### Ollama — pull and run models
-
-```bash
-ollama pull llama3.2          # 3B, fastest
-ollama pull qwen2.5:32b       # 32B, best quality on M5 Pro
-ollama pull qwen2.5-coder     # code-focused
-ollama list                   # list downloaded models
-ollama rm llama3.2            # remove a model
-```
-
-### ComfyUI — data directory
-
-Models, outputs, custom nodes: `~/Library/Application Support/comfy-ui/`
-
----
-
-## First-time setup
-
-**TL;DR:** `./bin/mana bootstrap` does everything. Read on if you want to know what it does, or to do steps manually.
-
-### Automated
-
-```bash
-mkdir -p ~/repo && git clone https://github.com/poomnupong/mana.git ~/repo/mana
-cd ~/repo/mana
-./bin/mana bootstrap
-```
-
-The script is idempotent. Each step is skipped if already satisfied:
-
-1. Sanity checks (macOS 26+ Apple silicon)
-2. Write `local.nix` (username + hostname from your machine)
-3. Prompt for git `user.name` / `user.email` if `~/.gitconfig` doesn't have them yet
-4. Install Determinate Nix
-5. Install Homebrew
-6. Apply the nix-darwin flake through a temporary clean source
-7. Install or upgrade Apple `container` runtime (latest release from GitHub)
-8. Install the latest stable official oMLX app and seed `~/.omlx/settings.json` with `host=0.0.0.0`, generated API key, and `sampling.max_context_window=65536`
-9. Create `hermes/.env` from `.env.example` and sync `OMLX_API_KEY`
-10. `hermes/run.sh rebuild`
-
-### Manual (if you prefer step-by-step)
-
-#### 1. Install Nix
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
-```
-
-Restart your terminal after installation.
-
-#### 2. Clone this repo
+## Quick Start
 
 ```bash
 mkdir -p ~/repo
 git clone https://github.com/poomnupong/mana.git ~/repo/mana
 cd ~/repo/mana
-```
-
-#### 3. Write `local.nix` (auto-done by mana bootstrap)
-
-`flake.nix` reads per-machine identity from a gitignored `./local.nix`. `mana bootstrap` generates it from `id -un` and `scutil --get LocalHostName`. To do it manually, create `local.nix` at the repo root:
-
-```nix
-{
-  username = "your-username";   # e.g. "alice"
-  hostname = "your-hostname";   # e.g. "alice-mbp"
-}
-```
-
-Then ensure your Mac's `LocalHostName` matches:
-
-```bash
-scutil --get LocalHostName
-sudo scutil --set LocalHostName your-hostname   # only if different
-```
-
-Use `mana rebuild` for activation; it makes `local.nix` visible to Nix without staging it.
-
-#### 4. Install Homebrew
-
-nix-darwin manages Homebrew declaratively but does not install it — do that once manually:
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-#### 5. Build and activate
-
-On a fresh Mac, run the complete bootstrap (it also installs Nix when needed):
-
-```bash
 ./bin/mana bootstrap
 ```
 
-After this first run, use:
+Bootstrap installs missing prerequisites, reconciles Nix/Homebrew, checks the
+latest Apple container and stable oMLX releases, seeds local settings, and
+starts Hermes. Existing configuration and persistent data are preserved.
+It can prompt for your macOS password; type it directly into the terminal.
+
+Keep the checkout at `~/repo/mana`: [home.nix](home.nix) uses that path for
+both shell access and login startup. Open a new terminal after bootstrap;
+until then, invoke `./bin/mana`.
+
+1. Open <http://127.0.0.1:8000/admin> and download a model suitable for your Mac.
+2. Set `model.default` in the local Hermes configuration to the ID shown by
+   `mana omlx models`. Match its context length to the oMLX model settings.
+3. Run `mana hermes restart`, then `mana hermes` or `mana hermes dashboard`.
+
+The dashboard is at <http://127.0.0.1:9119>. `mana hermes dashboard` prints its
+locally generated login. Keep that output private.
+
+## Commands
+
+| Command | Contract |
+|---------|----------|
+| `mana help [command]` | Discover commands and detailed usage |
+| `mana services` | Review managed services, dependencies, and other Apple containers |
+| `mana services <action> <name>` | `status`, `start`, `stop`, `restart`, or `logs` |
+| `mana doctor [--fix [--yes]]` | Diagnose; repair with warning/consent and a final health recheck |
+| `mana rebuild` | Apply local Nix changes and enforce the declared Homebrew inventory; no version-upgrade step |
+| `mana update [--no-flake] [--no-brew]` | Update Nix inputs, Homebrew versions, and stable oMLX, then restart oMLX |
+| `mana bootstrap` | Reconcile the workstation, including installing/updating Apple container |
+| `mana omlx <command>` | App installation/update, lifecycle, status, logs, model IDs, and API key |
+| `mana hermes [command]` | Bare command opens chat; also `up`, `down`, `restart`, `rebuild`, `status`, `dashboard`, `logs` |
+| `mana uninstall <component>` | Remove `omlx`, `hermes`, or `container`; keep data unless explicitly purged |
+
+Service examples:
 
 ```bash
-mana rebuild
+mana services
+mana services start hermes           # starts the runtime when necessary
+mana services restart omlx
+mana services logs hermes
+mana services status container       # runtime plus all container states
+mana services restart container      # warns: affects ALL containers
+mana services status container:buildkit
 ```
 
-#### 6. Generate Open-WebUI secret key
+`omlx`, `hermes`, and `container` are the initial managed service names.
+`container:<id>` addresses an existing container without inventing an installation
+recipe. `container:hermes-agent` uses Hermes' managed lifecycle. Stopping or
+restarting the runtime asks for confirmation; `--yes` is the automation override.
+Runtime restart restores only previously running containers.
 
-Open-WebUI needs a secret key file (not stored in git):
+Listing/status is read-only and returns nonzero when a checked service is
+unhealthy. HTTP health probes establish endpoint availability, not successful
+LLM inference or browser/search functionality. A dashboard HTTP 401 means its
+authentication gate is responding.
+
+## Ownership And Updates
+
+| Layer | Source of truth | Owner |
+|-------|-----------------|-------|
+| System, CLI tools, shell, login startup | [darwin.nix](darwin.nix), [home.nix](home.nix), [flake.lock](flake.lock) | Nix / nix-darwin / Home Manager |
+| GUI apps and any Brew formulae | `homebrew.casks` / `homebrew.brews` in [darwin.nix](darwin.nix) | Declarative Homebrew activation |
+| oMLX app | [libexec/mana/omlx](libexec/mana/omlx) | Official signed DMG; app owns its server |
+| Apple container runtime | [libexec/mana/bootstrap](libexec/mana/bootstrap) | Official package; user-scoped runtime |
+| Hermes | [hermes/Dockerfile](hermes/Dockerfile), [hermes/run.sh](hermes/run.sh) | Mana recipe and Apple container |
+| Model conversion tools | [modelops/pyproject.toml](modelops/pyproject.toml), [modelops/uv.lock](modelops/uv.lock) | Isolated `uv` environment |
+
+**No out-of-band Brew installs.** Add/remove packages in Nix and run `mana rebuild`.
+Activation deliberately uses forced `zap` cleanup: undeclared Brew software and
+associated cask data can be removed. Rebuilds may install newly declared packages,
+but do not upgrade existing versions. `mana update` owns those upgrades.
+
+`mana update` does not update Apple container, Hermes images, or modelops
+dependencies. Use bootstrap for the runtime, `mana hermes rebuild` for a new
+Hermes image, and the [modelops workflow](modelops/README.md) for Python packages.
+`mana hermes restart` reloads configuration without rebuilding or updating images.
+
+This is an installation recipe with **partial version pinning**, not a bit-for-bit
+reproducible machine image. Nix and modelops have lockfiles; Brew releases, oMLX,
+Apple container, and upstream Hermes image/build dependencies follow moving
+channels. Review updates before relying on them for unattended workloads.
+
+## State And Recovery
+
+| State | Location | Retained by rebuilds? |
+|-------|----------|-----------------------|
+| Machine identity | gitignored `local.nix` | Yes |
+| Hermes settings and credentials | gitignored `hermes/config.yaml` and `hermes/.env` | Yes |
+| Memories and exchanged files | gitignored `hermes/data/` and `hermes/workspace/` | Yes |
+| Sessions, plugins, cron, caches | `hermes-data` named volume | Yes |
+| oMLX settings, key, and models | `~/.omlx/` | Yes |
+| Disposable Hermes root filesystem | Apple container storage | No, on Hermes rebuild |
+
+Rebuild is **not a clean-state or incident-recovery reset**. Persistent plugins,
+configuration, and writable bind mounts survive. See [operations](docs/operations.md)
+for backup, troubleshooting, and explicit purge behavior.
+
+Hermes starts at login through Home Manager. Service stop/start commands affect
+the current session; change the Nix launch agent to change login policy. Optional
+Ollama and LM Studio apps are installed, but Mana does not control their servers.
+There are no ComfyUI or Open-WebUI service definitions in this repository.
+
+## Development
+
+The public dispatcher is [bin/mana](bin/mana); implementations live under
+`libexec/mana`. Service orchestration delegates to the same component commands
+used directly by people and doctor. Keep new services' installation/configuration
+in code; runtime discovery alone does not make a service managed.
 
 ```bash
-mkdir -p ~/.config/open-webui
-openssl rand -hex 32 > ~/.config/open-webui/secret_key
-chmod 600 ~/.config/open-webui/secret_key
+/bin/bash tests/lifecycle.sh
 ```
 
-#### 7. Manual steps (one-time)
-
-**Terminal.app theme:**
-1. Double-click `materialshell-dark.terminal` to import
-2. Set as default in Terminal → Settings → Profiles
-3. Set font to `FiraCode Nerd Font Mono` size 12
-
-**VS Code:**
-1. Sign in with GitHub → extensions sync automatically
-2. `Cmd+Shift+P` → "Shell Command: Install 'code' command in PATH"
-
-**Apple `container` (microVM runtime):**
-
-Apple's `container` tool is not distributed via Homebrew — install the signed `.pkg` manually:
-
-1. Download the latest installer from [github.com/apple/container/releases](https://github.com/apple/container/releases)
-2. Double-click the `.pkg` and follow the prompts (requires macOS 26+ on Apple silicon)
-3. Start the system service:
-   ```bash
-   container system start
-   ```
-
-To upgrade later:
-
-```bash
-/usr/local/bin/update-container.sh
-```
-
-To uninstall (keep user data with `-k`, remove with `-d`):
-
-```bash
-/usr/local/bin/uninstall-container.sh -k
-```
-
-> Or, from the repo: `mana uninstall container` (wraps the script above with `-k`; `--purge` passes `-d`).
-
----
-
-## Starting over (uninstall / reinstall a component)
-
-`mana uninstall <component>` factory-resets one **imperative** piece of the stack without touching the Nix files — so the declarative layer stays idempotent and re-running `mana bootstrap` (or `darwin-rebuild`) cleanly reinstalls. Use it to "start over" on a single component:
-
-```bash
-mana uninstall omlx        # remove oMLX, keep ~/.omlx (models + settings) intact
-mana bootstrap             # reinstalls the stable app; step 8 reseeds settings.json
-```
-
-| Component | Default (data-safe) | `--purge` adds | Reinstall |
-|-----------|---------------------|----------------|-----------|
-| `omlx` | stop + remove `/Applications/oMLX.app`; keep `~/.omlx/` | `rm -rf ~/.omlx` | `mana bootstrap` |
-| `hermes` | stop + delete container + remove image; keep `hermes-data` volume & host files | delete `hermes-data` volume | `mana hermes rebuild` |
-| `container` | `uninstall-container.sh -k` (keep data) | `… -d` (delete data) | `mana bootstrap` |
-
-**Sparing data on `--purge` (oMLX only):**
-
-```bash
-mana uninstall omlx --purge                          # wipe ~/.omlx entirely
-mana uninstall omlx --purge --keep-models            # spare ~/.omlx/models/ (the weights)
-mana uninstall omlx --purge --keep-config            # spare settings.json + model_settings.json
-mana uninstall omlx --purge --keep-models --keep-config   # spare both
-```
-
-Other flags: `--yes` (skip the confirmation prompt), `--dry-run` (print what would happen, change nothing).
-
-> **Hermes host files are never deleted** — `hermes/.env`, `hermes/config.yaml`, `hermes/data/memories/`, and `hermes/workspace/` survive every `mana uninstall hermes`, even with `--purge`. The `hermes-data` named volume also survives by default, but `--purge` deletes it, including sessions and plugin/cron state.
->
-> **Nix-managed things** (CLI packages, casks, fonts) are not handled by `mana uninstall` — remove those by editing `home.nix` / `darwin.nix` and running `mana update`.
-
----
-
-## Day-to-day usage
-
-### Adding a CLI tool
-
-Edit `home.nix`, add to `home.packages`:
-
-```nix
-home.packages = with pkgs; [
-  htop  # ← new
-];
-```
-
-### Adding a GUI app (cask)
-
-Enable Homebrew in `darwin.nix` and add to `homebrew.casks`:
-
-```nix
-homebrew.enable = true;
-homebrew.casks = [ "firefox" ];
-```
-
-### Apply changes
-
-```bash
-mana rebuild
-```
-
-### Update all packages
-
-```bash
-cd ~/repo/mana
-mana update                 # flake/brew update + darwin-rebuild + stable oMLX app update
-```
-
-`mana update` runs `brew upgrade` with `--verbose` **before** `darwin-rebuild`, then checks the stable oMLX app channel separately.
-
-Before Homebrew operations, bootstrap, rebuild, and update remove root-owned Python bytecode caches left by legacy root-run services. Only generated `__pycache__` directories inside Homebrew's Python locations are touched; this prevents stale permissions from blocking `brew cleanup`.
-
-At startup, `mana update` deliberately clears any cached sudo authorization and displays `Administrator Password:`. Type the macOS administrator password directly into that terminal (no characters will appear); the command waits for the response and then reuses sudo's credential ticket for the rebuild. `mana bootstrap` uses the same interaction before its first system activation.
-
-To update the Nix layer by hand instead:
-
-```bash
-nix flake update
-mana rebuild
-```
-
----
-
-## Troubleshooting
-
-### `git config --global` fails with "Permission denied"
-
-Home Manager (`programs.git.enable = true` in [home.nix](home.nix)) symlinks `~/.config/git/config` to the read-only nix store. Plain `git config --global …` tries to write that file and fails with `EACCES`.
-
-Fix: write to `~/.gitconfig` instead (git reads both and merges them):
-
-```bash
-GIT_CONFIG_GLOBAL=~/.gitconfig git config --global user.name  "Your Name"
-GIT_CONFIG_GLOBAL=~/.gitconfig git config --global user.email "you@example.com"
-```
-
-`mana bootstrap` does this automatically. We deliberately don't put identity into `home.nix` itself, so personal info doesn't leak back into the public flake.
-
----
-
-### oMLX won't start / old formula cannot download dependencies
-
-- **Old Homebrew install fails on `files.pythonhosted.org`.** Managed networks may block the PyPI CDN used by the source formula. Run `mana omlx install`; it installs the self-contained official DMG and removes the superseded formula without touching `~/.omlx`.
-- **Port 8000 is already in use or lifecycle control fails.** A stale Nix/Brew launch agent or orphaned server may be holding the port. Diagnose and repair:
-
-  ```bash
-  mana doctor          # report what's wrong
-  mana doctor --fix    # remove stale ownership and restart the app-managed server
-  mana omlx status     # confirm: app version, port bound, HTTP 200
-  ```
-
----
-
-## Backup & restore
-
-Hermes has two persistence layers: portable host files under `hermes/`, and the Apple Container `hermes-data` volume containing sessions, plugins, cron state, and caches. Back up the host files for configuration, credentials, memories, and workspace:
-
-**Back up:**
-
-```bash
-cd ~/repo/mana
-tar czf ~/hermes-backup-$(date +%Y%m%d).tgz \
-    hermes/.env \
-    hermes/config.yaml \
-    hermes/data \
-  hermes/workspace
-```
-
-Stash the tarball somewhere durable (iCloud Drive, external disk, encrypted USB — it contains your API key, so treat it like a secret).
-
-To preserve dashboard/chat sessions and other container-side state too, export the named volume while Hermes is running:
-
-```bash
-container exec hermes-agent tar czf - \
-  --exclude=.env --exclude=config.yaml \
-  --exclude=Dockerfile --exclude=entrypoint.sh \
-  --exclude=memories --exclude=workspace --exclude=lost+found \
-  -C /opt/data . > ~/hermes-volume-$(date +%Y%m%d).tgz
-```
-
-The exclusions are host bind mounts already covered by the first archive.
-
-**Restore on a fresh Mac:**
-
-```bash
-mkdir -p ~/repo
-git clone https://github.com/poomnupong/mana.git ~/repo/mana
-cd ~/repo/mana
-tar xzf ~/hermes-backup-YYYYMMDD.tgz   # restores .env + config + memories + workspace
-./bin/mana bootstrap
-```
-
-`mana bootstrap` will reconcile `OMLX_API_KEY` in the restored `.env` with the new machine's oMLX key, while your live Hermes config, memories, and workspace come through verbatim — they're in the tarball, not the public repo.
-
-If you also exported `hermes-data`, restore it after bootstrap, then restart Hermes:
-
-```bash
-./bin/mana hermes down
-container delete hermes-agent
-cat ~/hermes-volume-YYYYMMDD.tgz | container run --rm -i \
-  --user root --entrypoint /bin/tar \
-  -v hermes-data:/opt/data hermes-toolbox:latest \
-  xzf - -C /opt/data
-./bin/mana hermes up
-```
-
-If you only care about the agent's "identity" (memories) and don't mind reconfiguring everything else, the minimum backup is just `hermes/data/memories/`.
-
----
-
-## Pushing to GitHub
-
-```bash
-cd ~/repo/mana
-git add .
-git commit -m "initial: declarative macOS environment"
-git remote add origin git@github.com:<your-username>/mana.git
-git push -u origin main
-```
+These tests use temporary homes and mocked process/container commands. They do
+not stop host services, read real credentials, or download dependencies. Follow
+with `mana services` and `mana doctor` for live checks. Nix activation is a separate,
+privileged step; it is not part of the test suite.
+
+Workflow operations such as model downloading, conversion, and quantization stay
+explicit rather than becoming Mana wrappers. See the [modelops guide](modelops/README.md).

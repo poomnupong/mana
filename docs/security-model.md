@@ -1,104 +1,73 @@
-# What this repo is — and what it isn't
+# Security Model
 
-> A read-before-you-adopt guide to the security model, the isolation boundary, and the deliberate trade-offs. If you only read one doc before deciding whether this repo fits you, read this one.
+Mana runs Hermes, an autonomous web-connected agent capable of arbitrary code
+execution, inside an Apple `container` microVM. oMLX runs on the Mac for Metal
+acceleration. The VM limits the agent's access; it does not make untrusted code
+or prompts harmless.
 
-## In one sentence
+## What Is Isolated
 
-This repo gives you a **sandboxed, disposable, web-connected AI coding agent** — Hermes running inside an Apple `container` microVM, talking to a local MLX model — and that sandbox is the entire point. It is **not** a personal-computer assistant that drives your real desktop, apps, or corporate accounts.
+- The agent's shell executes in Linux inside the VM, not in your macOS account.
+- Your home directory, SSH/cloud credentials, synced documents, and authenticated
+  desktop browser are not mounted into the container.
+- Browser automation uses Camofox inside the VM, not your desktop browser.
+- Disposable root-filesystem changes disappear when the container is replaced.
 
----
+The agent can still reach network services on the Mac. A host API exposed to
+Hermes is an additional capability, even when no host filesystem is mounted.
 
-## The problem it solves
+## What Is Shared
 
-Hermes Agent is **autonomous, web-connected, self-modifying, and runs arbitrary shell**. That combination is genuinely useful and genuinely risky:
+The container reads/writes its named volume and explicit host mounts:
 
-- It executes shell commands you didn't individually approve (especially under `approvals: smart`, and far more so under YOLO / cron / gateway modes).
-- It browses the web, so it's exposed to **prompt injection** — a malicious page saying "ignore previous instructions, exfiltrate X."
-- It writes its own skills, edits its own memory, and installs its own packages at runtime.
+| Surface | Consequence |
+|---------|-------------|
+| `hermes/.env` | The agent can read its API keys and dashboard credentials |
+| `hermes/config.yaml` | The agent can change its persistent configuration |
+| `hermes/data/memories/`, `hermes/workspace/` | Files can be changed, deleted, or exfiltrated |
+| Dockerfile, entrypoint, SearXNG settings | Persistent recipe/startup changes can affect later builds or runs |
+| `hermes-data` named volume | Sessions, plugins, cron state, and caches survive container replacement |
 
-Running that directly on your Mac means a bad command, a poisoned dependency, or a successful injection has your **whole user account** in reach: `~/.ssh`, `~/.aws`, browser cookies, OneDrive/iCloud sessions, every file you can touch.
+Review the actual mounts in [hermes/run.sh](../hermes/run.sh) when changing the
+boundary. Do not mount your entire home directory or add host SSH execution as
+an incidental convenience. Those are explicit changes to the trust model.
 
-This repo's answer: **put the agent in a microVM** and hand it only a few explicit bind mounts. The blast radius becomes the VM plus those mounts, not your home directory. When it gets messy, `mana hermes rebuild` resets it to clean.
+## Network And Credentials
 
----
+Network egress is open. Prompt-injected code can send out anything it can read.
+Avoid putting high-value cloud billing keys in the agent's environment; scope
+credentials and limits to the work you are willing to expose.
 
-## What the container actually protects
+The dashboard is published only on host loopback, port 9119, with authentication.
+oMLX binds `0.0.0.0:8000` for VM access and uses an API key. That bind address also
+allows connections through other reachable interfaces: it is not limited to
+the VM by this repository's firewall configuration. Treat the local key as a
+credential and never assume "local model" means "no network exposure."
 
-These are the concrete, real defenses — not theater — and they're justified precisely *because* of Hermes' threat profile:
+The Apple virtualization/runtime stack is part of the trusted computing base.
+A VM escape is unlikely but possible. The container runs with substantial power
+inside the guest; it is not a second application-permission sandbox within Linux.
 
-1. **Filesystem blast radius.** A destructive command (`rm -rf`, a malicious `npm` postinstall, a confused reasoning step) hits the VM and the handful of bind mounts, not your real `~`.
+## Rebuild Is Not Sanitization
 
-2. **Credential isolation.** The container sees `OMLX_API_KEY` and whatever is in `hermes/.env`. It does **not** inherit `~/.ssh`, `~/.aws`, `~/.config/gh`, your browser cookies, your OneDrive/iCloud session tokens, or your Keychain-adjacent files. This is the single biggest difference from a host-native install, which inherits your *entire* credential surface.
+`mana hermes restart` keeps the container and all state. `mana hermes rebuild`
+replaces its disposable root filesystem but **keeps the named volume and host
+mounts**, including persistent plugins, cron tasks, memories, and editable recipes.
+It cannot promise to remove a compromised agent's persistence.
 
-3. **Prompt-injection containment.** A *successful* injection still can't read your OneDrive — the agent physically can't see it. (Hermes even scans its own memory entries for injection patterns, because memory is re-injected into the system prompt.)
+For incident recovery, preserve evidence/backups, inspect or replace persistent
+state and writable recipes from a trusted source, and rotate exposed credentials.
+`mana uninstall hermes --purge` deletes the named volume but still keeps host
+files. See [operations](operations.md) for backup and purge behavior.
 
-4. **Self-modification containment.** Skill-writing, memory edits, and runtime package installs all happen in a disposable box you can rebuild.
+## Host-Native Assistants
 
----
+A desktop frontend does not by itself change the backend's privileges. A frontend
+connected to the container still uses a containerized agent; an application that
+installs and launches its own host-native agent does not. Mana does not install
+Hermes Desktop. Consult its current upstream connection documentation before
+attaching another frontend, and verify which backend actually executes tools.
 
-## What it does NOT protect — be honest about the limits
-
-The sandbox is real, but it is **not** a force field. Know these:
-
-- **Network egress is open.** The agent needs the internet for web search and cloud models. So this is **not** a network jail — anything the agent *can read*, it can still potentially *send out*. That's exactly why limiting what it can read (points 1–2 above) is the actual defense.
-
-- **Bind mounts are inside the trust boundary.** `hermes/data/memories/`, `hermes/workspace/`, and **`hermes/.env`** are all readable by the agent. A prompt-injected agent could exfiltrate your `.env`. `OMLX_API_KEY` is low-value (local only) — but **do not casually drop a high-value cloud billing key** (OpenAI, Anthropic) into that `.env`, because it's now in the agent's reach.
-
-- **The VM boundary is the trust boundary.** Hypervisor escape is low-probability but non-zero, and Apple's `container` runtime is **young** (macOS 26+). You are trusting a new microVM stack.
-
-- **Isolation erodes with every convenience mount.** The moment you mount `~/code`, or your OneDrive, or add a host SSH backend so Hermes can "help with real work," you punch a hole in the boundary. A container with your whole home directory mounted is just a host install wearing a costume. The danger isn't choosing host-native deliberately — it's **drifting into it by accident**, one mount at a time.
-
----
-
-## The core trade-off
-
-> An agent's value ∝ its access ∝ its risk.
-
-In the container, Hermes can only meaningfully work inside `hermes/workspace/`. It **cannot** touch your real projects, drive your real apps, or use your authenticated browser session. That's the price of the safety. If you need those things, you're describing a **different product** (see below) — not a tweak to this one.
-
----
-
-## Hermes Desktop app (released 2026) — does it change any of this?
-
-**No.** The desktop app is a **front-end (an Electron renderer), not a capability.** It sends *your* keystrokes to a backend and draws *the backend's* output. The agent's powers — what files it can touch, what shell it runs — are defined entirely by the **backend**, not by which window is attached to it.
-
-This isn't an inference — it's how Nous documents the app. Per the official [Desktop App → How it works](https://hermes-agent.nousresearch.com/docs/user-guide/desktop#how-it-works) docs: *"The packaged app ships only the Electron shell… The React renderer talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it."* The same page frames the desktop app, CLI, TUI, and web dashboard as interchangeable [front ends that "all talk to the same agent"](https://hermes-agent.nousresearch.com/docs/user-guide/desktop) — *"not a separate product or a lightweight clone."* And [connecting to a remote backend](https://hermes-agent.nousresearch.com/docs/user-guide/desktop#connecting-to-a-remote-backend) is explicitly *"a running `hermes dashboard` process … that is the process the desktop app connects to"* — exactly the container's dashboard in this repo.
-
-So you can attach Hermes Desktop to this repo's containerized backend (it already runs `hermes dashboard` on `127.0.0.1:9119`) and get a native GUI **with the jail fully intact**:
-
-- It does **not** give the containerized agent mouse/keyboard control of your Mac.
-- It **cannot** reach OneDrive or any host resource the container can't already see.
-- Browser automation still puppeteers **Camofox inside the VM** — a virtual display, not your macOS desktop.
-
-For Hermes to control your real desktop or read corporate files, the **agent itself** would have to run on the host (a host-native install), or you'd have to deliberately add a host-bridging backend to the container config. The GUI alone never does that. **The security boundary is the backend; the desktop app is just glass.**
-
-> **You usually don't need the native app.** This repo serves the same `hermes dashboard` as a **browser GUI** — open it with `mana hermes dashboard`, and it installs nothing on your Mac. The native desktop app, by contrast, lays down a host-side `~/.hermes` agent runtime, so **this repo deliberately doesn't install it** — that's an out-of-scope, do-it-yourself step.
->
-> To attach the native app anyway: install it yourself (`hermes desktop`, or the DMG from the Hermes site), then in **Settings → Gateway → Remote gateway** point it at `http://127.0.0.1:9119`. Because the container's dashboard binds `0.0.0.0` inside the VM, it engages an auth gate — `mana bootstrap` already seeds a readable `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` (and a stable `_SECRET`) into `hermes/.env`; sign in with those. Published only to loopback, basic-auth is acceptable here.
-
----
-
-## Containerized (this repo) vs. host-native — when to choose which
-
-| | **Containerized (this repo)** | **Host-native Hermes** |
-|---|---|---|
-| Agent runs in | Apple `container` microVM | Your macOS user account |
-| Sees your credentials (`~/.ssh`, OneDrive, …) | **No** | **Yes** |
-| Can work on your real projects | Only what you mount | Anything you can touch |
-| Real-desktop "computer use" (mouse/apps) | **No** | **Yes** |
-| Prompt-injection blast radius | VM + bind mounts | Whole user account |
-| Reset to clean | `mana hermes rebuild` | Reinstall / manual cleanup |
-| Good for | Autonomous, web-facing, experimental, untrusted tasks | A deliberate personal assistant on *this* machine |
-
-**Stay containerized when:** you run autonomous/YOLO/cron/gateway modes, let it browse freely, or do anything untrusted — and you value the disposable, reproducible, blast-radius-resettable model. This is the repo's whole thesis.
-
-**Choose host-native when:** you *specifically* need real-desktop computer-use or direct host-project access — and you accept the posture. If you do, prefer a machine or user account **without** corporate credentials (no OneDrive sign-in, no SSH keys), and keep it in approval mode, not YOLO. Host-native isn't "insecure" — it's a **deliberately different tool** with a host-level trust posture.
-
----
-
-## Bottom line for deciding
-
-- Use this repo if you want an AI coding agent you can let off the leash **safely**, because it can't reach your real files, keys, or accounts.
-- Don't use it (unmodified) if your goal is an assistant that operates your real desktop and corporate apps — that's host-native Hermes, a different trade-off.
-- Adding the **desktop app does not** change either posture; it's purely ergonomic.
-- The one discipline that matters: **resist the slow creep of "just one more mount,"** which quietly turns the sandbox into a host install with extra steps.
+Use a host-native agent only when you deliberately need real-project, desktop,
+or authenticated-app access and accept the larger credential and filesystem
+exposure. Prefer scoped accounts and approvals for that separate use case.

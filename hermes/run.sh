@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hermes Agent — Apple Container lifecycle management
-# Usage: run.sh {up|down|rebuild|status}
+# Usage: run.sh {up|down|restart|rebuild|status|health}
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,12 +30,24 @@ ensure_system() {
     fi
 }
 
+container_state() {
+    container list --all --format json | jq -r --arg id "$1" '
+        [.[] | select(.configuration.id == $id)][0]
+        | if . == null then "missing"
+          elif (.status | type) == "object" then .status.state
+          else .status end'
+}
+
 is_running() {
-    container list --format json 2>/dev/null | jq -e ".[] | select(.configuration.id == \"$1\" and (.status.state == \"running\" or .status == \"running\"))" >/dev/null 2>&1
+    local state
+    state="$(container_state "$1")" || return 1
+    [ "$state" = "running" ]
 }
 
 exists() {
-    container list --all --format json 2>/dev/null | jq -e ".[] | select(.configuration.id == \"$1\")" >/dev/null 2>&1
+    local state
+    state="$(container_state "$1")" || return 1
+    [ "$state" != "missing" ]
 }
 
 ensure_volume() {
@@ -120,6 +132,7 @@ cmd_up() {
 
     # Ensure container system is running (needed after reboot)
     ensure_system
+    container list --all --format json >/dev/null
 
     # Reconcile OMLX_API_KEY with the live oMLX server before launch
     sync_omlx_key
@@ -141,7 +154,7 @@ cmd_up() {
     if ! is_running "hermes-agent"; then
         if exists "hermes-agent"; then
             echo "Starting existing Hermes container..."
-            container start hermes-agent 2>/dev/null || true
+            container start hermes-agent
         else
             echo "Creating Hermes container..."
             container run -d \
@@ -170,6 +183,16 @@ cmd_up() {
         echo "Hermes already running."
     fi
 
+    local deadline=$((SECONDS + 90))
+    until cmd_health >/dev/null 2>&1; do
+        if [ "$SECONDS" -ge "$deadline" ] || ! is_running hermes-agent; then
+            cmd_status || true
+            echo "Error: Hermes is not healthy. Run 'mana hermes logs'." >&2
+            return 1
+        fi
+        sleep 1
+    done
+
     echo ""
     cmd_status
     echo ""
@@ -179,21 +202,22 @@ cmd_up() {
 
 cmd_down() {
     echo "Stopping Hermes workspace..."
+    container list --all --format json >/dev/null
     if is_running "hermes-agent"; then
         container stop hermes-agent
     fi
     echo "Stopped."
 }
 
+cmd_restart() {
+    ensure_system
+    cmd_down
+    cmd_up
+}
+
 cmd_rebuild() {
-    echo "Rebuilding Hermes toolbox image..."
-
-    # Stop and remove existing containers
-    cmd_down 2>/dev/null || true
-
-    if exists "hermes-agent"; then
-        container delete hermes-agent
-    fi
+    echo "Rebuilding Hermes toolbox image (preserving persistent state)..."
+    ensure_system
 
     # Pull latest base image
     echo "Pulling base hermes-agent image..."
@@ -203,28 +227,58 @@ cmd_rebuild() {
     echo "Building hermes-toolbox image..."
     container build -t "$HERMES_IMAGE" "${SCRIPT_DIR}"
 
-    # Start fresh
+    cmd_down
+    if exists "hermes-agent"; then
+        container delete hermes-agent
+    fi
     cmd_up
 }
 
 cmd_status() {
-    echo "=== Hermes Workspace Status ==="
-    container list --all 2>/dev/null | grep -E "hermes-agent|ID" || echo "No containers found."
+    local state
+    state="$(container_state hermes-agent)" || return 1
+    printf 'hermes-agent: %s\n' "$state"
+    [ "$state" = "running" ] || return 1
+    cmd_health
+}
+
+cmd_health() {
+    container exec hermes-agent bash -c '
+        failed=0
+        for service in dashboard searxng camofox; do
+            case "$service" in
+                dashboard) url=http://127.0.0.1:9119/ ;;
+                searxng) url=http://127.0.0.1:8080/ ;;
+                camofox) url=http://127.0.0.1:9377/health ;;
+            esac
+            code=$(curl -s --max-time 3 -o /dev/null -w "%{http_code}" "$url") || code=000
+            case "$service:$code" in
+                dashboard:200|dashboard:302|dashboard:401|searxng:200|camofox:200)
+                    printf "  ok   %s (HTTP %s)\n" "$service" "$code" ;;
+                *) printf "  fail %s (HTTP %s)\n" "$service" "$code"; failed=1 ;;
+            esac
+        done
+        exit "$failed"
+    '
 }
 
 # ── Main ─────────────────────────────────────────────────
 case "${1:-help}" in
     up)      cmd_up ;;
     down)    cmd_down ;;
+    restart) cmd_restart ;;
     rebuild) cmd_rebuild ;;
     status)  cmd_status ;;
+    health)  cmd_health ;;
     *)
-        echo "Usage: $(basename "$0") {up|down|rebuild|status}"
+        echo "Usage: $(basename "$0") {up|down|restart|rebuild|status|health}"
         echo ""
         echo "  up       Start Hermes agent (with SearXNG built in)"
         echo "  down     Stop the container"
+        echo "  restart  Restart without updating or rebuilding the image"
         echo "  rebuild  Rebuild image and restart"
-        echo "  status   Show container status"
+        echo "  status   Show container state and endpoint health"
+        echo "  health   Probe dashboard, search, and browser endpoints"
         exit 1
         ;;
 esac

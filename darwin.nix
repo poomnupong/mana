@@ -38,12 +38,12 @@
   # the server lifecycle. Keeping it outside Homebrew avoids source builds
   # whose Python downloads may be blocked on managed networks.
 
-  # ── Homebrew — disabled, tools managed by Nix ────────────────
+  # Homebrew inventory is declarative; mana update owns version upgrades.
   homebrew = {
     enable = true;
     onActivation = {
-      autoUpdate = true;
-      upgrade    = true;
+      autoUpdate = false;
+      upgrade    = false;
       cleanup    = "zap";
       # Homebrew >= 5.1 refuses `brew bundle --cleanup` unless one of
       # --force / --force-cleanup / $HOMEBREW_ASK is also passed (it now

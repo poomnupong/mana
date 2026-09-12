@@ -14,7 +14,7 @@
 #   8. Install/configure official oMLX app  (latest stable DMG from GitHub)
 #   9. Seed hermes/.env from .env.example   (skip if .env exists)
 #   9b. Seed dashboard basic-auth creds     (skip if already set)
-#  10. Start Hermes container               (via mana hermes rebuild)
+#  10. Start/restart Hermes                 (build only if image is missing)
 #
 # Usage: ./bin/mana bootstrap   (on a fresh Mac, before bin/ is on PATH)
 #        mana bootstrap         (afterwards — bin/ is added to PATH by home.nix)
@@ -397,8 +397,8 @@ dash_user="$(grep -E '^HERMES_DASHBOARD_BASIC_AUTH_USERNAME=' "$envf" | head -1 
 dash_pass="$(grep -E '^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=' "$envf" | head -1 | cut -d= -f2-)"
 
 # ── 10. Hermes container ─────────────────────────────────
-log "Building & starting Hermes container..."
-"$REPO_DIR/hermes/run.sh" rebuild
+log "Starting/restarting Hermes container..."
+"$REPO_DIR/hermes/run.sh" restart
 
 configured_model="$(awk '/^[[:space:]]*default:[[:space:]]*/ { sub(/^[[:space:]]*default:[[:space:]]*/, ""); gsub(/^['\"']|['\"']$/, ""); print; exit }' "$REPO_DIR/hermes/config.yaml")"
 model_ids="$("$REPO_DIR/libexec/mana/omlx" models 2>/dev/null || true)"
@@ -425,7 +425,7 @@ $(printf "\033[1;32mBootstrap complete.\033[0m")
   Hermes dash: http://localhost:9119
                login: ${dash_user} / ${dash_pass}
                change: edit HERMES_DASHBOARD_BASIC_AUTH_PASSWORD in hermes/.env,
-                       then run 'mana hermes rebuild'
+                       then run 'mana hermes restart'
   Attach:      container exec -it hermes-agent bash
     Chat now:    ./bin/mana hermes
     Browser GUI: ./bin/mana hermes dashboard

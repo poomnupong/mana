@@ -1,5 +1,5 @@
 #!/bin/bash
-# mana — update everything, verbosely
+# mana — update Nix, Homebrew, and the stable oMLX app
 #
 # This upgrades Homebrew visibly before nix-darwin activation, updates the
 # flake, and then updates the official oMLX app from its stable DMG channel.
@@ -62,8 +62,8 @@ if [ "$do_brew" -eq 1 ] && command -v brew >/dev/null 2>&1; then
     else
         log "Homebrew already up to date — skipping upgrade."
     fi
-else
-    [ "$do_brew" -eq 1 ] && warn "brew not found — skipping Homebrew upgrade."
+elif [ "$do_brew" -eq 1 ]; then
+    warn "brew not found — skipping Homebrew upgrade."
 fi
 
 # ── 2. Flake inputs ──────────────────────────────────────
@@ -75,8 +75,7 @@ else
 fi
 
 # ── 3. Rebuild nix-darwin ────────────────────────────────
-# brew was already upgraded above, so activation's silent brew step is a
-# no-op here.
+# Activation reconciles the declared Homebrew inventory without upgrading it.
 log "Applying nix-darwin flake (sudo)..."
 flake_source="$("$REPO_DIR/libexec/mana/flake-source")"
 trap 'rm -rf "$flake_source"' EXIT
@@ -89,7 +88,7 @@ fi
 # ── 4. Official oMLX app ─────────────────────────────────
 log "Checking the stable oMLX app channel..."
 "$REPO_DIR/libexec/mana/omlx" upgrade
-"$REPO_DIR/libexec/mana/omlx" restart >/dev/null 2>&1 \
-    || warn "oMLX restart failed - run 'mana doctor --fix'."
+"$REPO_DIR/libexec/mana/omlx" restart \
+    || die "Dependencies updated, but oMLX restart failed. Run 'mana doctor'."
 
 printf "\n\033[1;32mUpdate complete.\033[0m  Verify oMLX with: mana omlx status\n"

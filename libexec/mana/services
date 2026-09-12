@@ -1,0 +1,143 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+MANAGED="$REPO_DIR/libexec/mana"
+
+show_help() {
+    cat <<'EOF'
+Usage: mana services [list]
+       mana services status [omlx|hermes|container|container:<id>]
+       mana services <start|stop|restart|logs> <name> [--yes]
+
+Managed services:
+    omlx       Official app-managed inference server
+    hermes     Hermes container; start also starts its runtime
+    container  Apple container runtime shared by all containers
+
+Existing containers can be addressed as container:<id>. This controls their
+runtime only; it does not install or recreate undeclared services. Hermes
+always uses its managed lifecycle, including via container:hermes-agent.
+
+Runtime stop/restart interrupts ALL containers and asks for confirmation.
+--yes acknowledges that warning for automation. Runtime restart restores
+previously running containers, not those that were stopped.
+
+Listing and status never start services. Unhealthy services return nonzero.
+Logs follow until Ctrl+C. Use mana doctor for diagnosis and repair.
+Start/stop affects the current session; login policy stays in home.nix.
+EOF
+}
+
+confirm_runtime() {
+    printf 'Warning: %s of the Apple runtime interrupts ALL containers, including non-Mana workloads.\n' "$action" >&2
+    [ "$assume_yes" -eq 1 ] && return 0
+    local reply
+    printf 'Proceed? [y/N] ' >&2
+    read -r reply || return 1
+    case "$reply" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+runtime_action() {
+    local running container_id
+    case "$action" in
+        status)
+            container system status
+            container list --all
+            ;;
+        start) container system start ;;
+        logs) container system logs --follow ;;
+        stop)
+            confirm_runtime || { printf 'Cancelled.\n' >&2; return 1; }
+            container system stop
+            ;;
+        restart)
+            running="$(container list --all --format json | jq -r '
+                .[] | select((.status | if type == "object" then .state else . end) == "running")
+                | .configuration.id')"
+            confirm_runtime || { printf 'Cancelled.\n' >&2; return 1; }
+            container system stop
+            container system start
+            while IFS= read -r container_id; do
+                [ -n "$container_id" ] || continue
+                if [ "$container_id" = "hermes-agent" ]; then
+                    "$MANAGED/hermes" up
+                else
+                    container start "$container_id"
+                fi
+            done <<< "$running"
+            ;;
+    esac
+}
+
+service_action() {
+    local target="$1" container_id
+    case "$target" in
+        omlx) "$MANAGED/omlx" "$action" ;;
+        hermes|container:hermes-agent)
+            case "$action" in
+                start) "$MANAGED/hermes" up ;;
+                stop) "$MANAGED/hermes" down ;;
+                *) "$MANAGED/hermes" "$action" ;;
+            esac
+            ;;
+        container) runtime_action ;;
+        container:*)
+            container_id="${target#container:}"
+            [[ "$container_id" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || {
+                printf 'Invalid container ID: %s\n' "$container_id" >&2; return 2;
+            }
+            container inspect "$container_id" >/dev/null
+            case "$action" in
+                status)
+                    state="$(container list --all --format json | jq -r --arg id "$container_id" '
+                        .[] | select(.configuration.id == $id)
+                        | .status | if type == "object" then .state else . end')"
+                    printf '%s: %s\n' "$container_id" "${state:-missing}"
+                    [ "$state" = running ]
+                    ;;
+                logs) container logs --follow "$container_id" ;;
+                restart) container stop "$container_id"; container start "$container_id" ;;
+                *) container "$action" "$container_id" ;;
+            esac
+            ;;
+        *) printf 'Unknown service: %s (try mana help services)\n' "$target" >&2; return 2 ;;
+    esac
+}
+
+assume_yes=0
+arguments=()
+for argument in "$@"; do
+    case "$argument" in
+        --yes) assume_yes=1 ;;
+        -h|--help) show_help; exit 0 ;;
+        *) arguments+=("$argument") ;;
+    esac
+done
+action="${arguments[0]:-list}"
+target="${arguments[1]:-}"
+[ "${#arguments[@]}" -le 2 ] || { show_help >&2; exit 2; }
+case "$action" in
+    list) [ -z "$target" ] || { show_help >&2; exit 2; } ;;
+    status) ;;
+    start|stop|restart|logs) [ -n "$target" ] || { show_help >&2; exit 2; } ;;
+    *) show_help >&2; exit 2 ;;
+esac
+if [ "$assume_yes" -eq 1 ] && { [ "$target" != container ] || [[ "$action" != stop && "$action" != restart ]]; }; then
+    printf '%s\n' '--yes is only valid for runtime stop/restart.' >&2
+    exit 2
+fi
+
+if [ -n "$target" ]; then
+    service_action "$target"
+else
+    printf '%-12s %-24s %s\n' SERVICE OWNER DEPENDENCY
+    printf '%-12s %-24s %s\n' container 'Apple container runtime' '-' omlx 'Official oMLX app' '-' hermes 'Mana container recipe' container
+    failed=0
+    action=status
+    for target in container omlx hermes; do
+        printf '\n[%s]\n' "$target"
+        service_action "$target" || failed=1
+    done
+    exit "$failed"
+fi
