@@ -44,6 +44,7 @@ locally generated login. Keep that output private.
 | Command | Contract |
 |---------|----------|
 | `mana help [command]` | Discover commands and detailed usage |
+| `mana version` | Show installed tool versions across Nix, Homebrew, oMLX, Hermes, and modelops |
 | `mana services` | Review managed services, dependencies, and other Apple containers |
 | `mana services <action> <name>` | `status`, `start`, `stop`, `restart`, or `logs` |
 | `mana doctor [--fix [--yes]]` | Diagnose; repair with warning/consent and a final health recheck |
@@ -53,6 +54,13 @@ locally generated login. Keep that output private.
 | `mana omlx <command>` | App installation/update, lifecycle, status, logs, model IDs, and API key |
 | `mana hermes [command]` | Bare command opens chat; also `up`, `down`, `restart`, `rebuild`, `status`, `dashboard`, `logs` |
 | `mana uninstall <component>` | Remove `omlx`, `hermes`, or `container`; keep data unless explicitly purged |
+
+`mana version` reads local metadata without installing, updating, or starting
+anything. It includes the Mana Git revision (with `-dirty` for tracked edits),
+Nix profile packages, Brew installation receipts, and managed AI tools. Hermes
+tool versions require an already-running container; missing environments are
+reported explicitly. Brew receipts can lag an app's own updater. Python output
+covers the managed tools rather than every transitive dependency.
 
 Service examples:
 

@@ -81,6 +81,7 @@
       _mana() {
         local -a commands subcommands
         commands=(
+          'version:show installed tool and application versions'
           'bootstrap:set up or reconcile the complete workstation'
           'rebuild:apply the current Nix configuration'
           'update:update Nix, Homebrew, and the stable oMLX app'

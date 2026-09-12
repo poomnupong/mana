@@ -21,6 +21,7 @@ Usage:
     mana <command> [arguments]  Run a command
 
 Commands:
+    version     Show installed tool and application versions
     bootstrap   Set up or reconcile the complete workstation
     rebuild     Apply the current Nix configuration
     update      Update Nix, Homebrew, and the stable oMLX app
@@ -42,7 +43,7 @@ EOF
 
 command_script() {
     case "$1" in
-        bootstrap|rebuild|update|doctor|services|omlx|hermes|uninstall)
+        version|bootstrap|rebuild|update|doctor|services|omlx|hermes|uninstall)
             printf '%s/%s\n' "$COMMAND_DIR" "$1"
             ;;
         *)

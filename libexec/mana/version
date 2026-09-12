@@ -1,0 +1,165 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+
+case "${1:-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: mana version
+
+Show the Mana revision, macOS, package managers, installed Nix profile packages,
+Homebrew formulae/casks, oMLX, and tools in Hermes and the modelops environment.
+Nix entries are installed store package names including their versions, with
+documentation outputs collapsed. Brew versions come from installation receipts;
+an app's own updater may change its version independently of those receipts.
+
+Uses local metadata only: no updates, installs, Nix evaluation, or service starts.
+Hermes tools are queried only while its container is running. Missing tools or
+unavailable inventories are reported without aborting the remaining checks.
+Python output covers the managed AI tools, not every transitive dependency.
+EOF
+        exit 0 ;;
+    "") ;;
+    *) printf 'Usage: mana version\n' >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { printf 'Usage: mana version\n' >&2; exit 2; }
+
+row() { printf '  %-24s %s\n' "$1" "$2"; }
+section() { printf '\n%s\n' "$1"; }
+probe() {
+    local label="$1" output
+    shift
+    if ! command -v "$1" >/dev/null 2>&1; then
+        row "$label" 'not installed / not on PATH'
+    elif output="$("$@" 2>/dev/null)" && [ -n "$output" ]; then
+        row "$label" "${output%%$'\n'*}"
+    else
+        row "$label" 'version unavailable'
+    fi
+}
+
+nix_packages() {
+    local profile="$1" references path nested packages=""
+    if [ ! -d "$profile" ] || ! command -v nix-store >/dev/null 2>&1; then
+        row "$2" 'profile unavailable'
+        return
+    fi
+    if ! references="$(nix-store --query --references "$profile" 2>/dev/null)"; then
+        row "$2" 'inventory unavailable'
+        return
+    fi
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        case "$path" in
+            *-home-manager-path)
+                if nested="$(nix-store --query --references "$path" 2>/dev/null)"; then
+                    packages+="$nested"$'\n'
+                else
+                    row "$2" 'Home Manager inventory unavailable'
+                fi
+                ;;
+            *) packages+="$path"$'\n' ;;
+        esac
+    done <<< "$references"
+    if [ -n "$packages" ]; then
+        printf '%s' "$packages" | sed -E '
+            /^$/d
+            s|^/nix/store/[a-z0-9]+-||
+            s/-(bin|man|doc|info|dev)$//
+            /^(hm-session-vars.sh|tmux-terminfo|darwin-help|darwin-manpages|darwin-option|darwin-rebuild|darwin-uninstaller|darwin-version)$/d
+        ' | sort -u | sed 's/^/  /'
+    else
+        row "$2" 'no packages recorded'
+    fi
+}
+
+python_tools() {
+    jq -r 'sort_by(.name)[]
+        | select(.name | test("^(hermes-agent|searxng|huggingface-hub|hf-transfer|mlx|mlx-lm|mlx-vlm|heretic-llm|torch|transformers|pip)$"; "i"))
+        | "  \(.name)  \(.version)"'
+}
+
+section 'Workstation'
+probe Mana git -C "$REPO_DIR" describe --always --dirty --tags
+probe macOS sw_vers -productVersion
+probe Nix nix --version
+probe 'Apple container' container --version
+if [ -r /run/current-system/darwin-version ]; then
+    row nix-darwin "$(</run/current-system/darwin-version)"
+else
+    row nix-darwin 'version metadata unavailable'
+fi
+if app_version="$(/usr/bin/defaults read /Applications/oMLX.app/Contents/Info.plist CFBundleShortVersionString 2>/dev/null)"; then
+    row oMLX "$app_version"
+else
+    row oMLX 'not installed / metadata unavailable'
+fi
+
+section 'Nix Packages (User Profile)'
+nix_packages "/etc/profiles/per-user/$(id -un)" 'User packages'
+section 'Nix Packages (System Profile)'
+nix_packages /run/current-system/sw 'System packages'
+
+section 'Homebrew (Installed Receipts)'
+brew_bin="$(command -v brew || true)"
+if [ -z "$brew_bin" ]; then
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$candidate" ]; then brew_bin="$candidate"; break; fi
+    done
+fi
+if [ -n "$brew_bin" ]; then
+    export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1
+    probe Homebrew "$brew_bin" --version
+    if inventory="$("$brew_bin" list --versions 2>/dev/null)"; then
+        if [ -n "$inventory" ]; then printf '%s\n' "$inventory" | sed 's/^/  /'; else row Packages 'none installed'; fi
+    else
+        row Packages 'inventory unavailable'
+    fi
+else
+    row Homebrew 'not installed'
+fi
+
+section 'Modelops (Installed Environment)'
+python="$REPO_DIR/modelops/.venv/bin/python"
+if [ ! -x "$python" ]; then
+    row modelops 'environment not installed'
+else
+    probe Python "$python" --version
+    if command -v uv >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 \
+            && inventory="$(uv --offline --no-cache pip list --python "$python" --format json 2>/dev/null)"; then
+        printf '%s' "$inventory" | python_tools || row Packages 'inventory unavailable'
+    else
+        row Packages 'inventory unavailable (requires uv and jq)'
+    fi
+fi
+
+section 'Hermes (Running Container)'
+if ! command -v container >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    row Hermes 'inventory unavailable (requires container and jq)'
+elif ! inventory="$(container list --all --format json 2>/dev/null)"; then
+    row Hermes 'runtime unavailable; no services started'
+elif state="$(printf '%s' "$inventory" | jq -er '
+    [.[] | select(.configuration.id == "hermes-agent")][0]
+    | if . == null then "not installed" else .status | if type == "object" then .state else . end end' 2>/dev/null)"; then
+    if [ "$state" != running ]; then
+        row Hermes "$state; tool versions unavailable without starting it"
+    else
+        probe Python container exec hermes-agent /opt/hermes/.venv/bin/python --version
+        probe Node.js container exec hermes-agent node --version
+        probe npm container exec hermes-agent npm --version
+        if inventory="$(container exec hermes-agent /opt/hermes/.venv/bin/pip list --format json --disable-pip-version-check 2>/dev/null)"; then
+            printf '%s' "$inventory" | python_tools || row 'Python tools' 'inventory unavailable'
+        else
+            row 'Python tools' 'inventory unavailable'
+        fi
+        if inventory="$(container exec hermes-agent npm list --global --depth=0 --json 2>/dev/null)"; then
+            printf '%s' "$inventory" | jq -r '.dependencies // {} | to_entries | sort_by(.key)[] | select(.key != "npm") | "  \(.key)  \(.value.version // "unknown")"' \
+                || row 'Node tools' 'inventory unavailable'
+        else
+            row 'Node tools' 'inventory unavailable'
+        fi
+    fi
+else
+    row Hermes 'invalid container inventory'
+fi

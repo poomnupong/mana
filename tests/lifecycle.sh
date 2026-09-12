@@ -119,3 +119,71 @@ if /bin/bash "$SANDBOX/hermes/run.sh" health >"$SANDBOX/output" 2>&1; then
 fi
 grep -q 'fail camofox' "$SANDBOX/output"
 printf 'PASS degraded endpoint fails health checks\n'
+
+export VERSION_CALLS="$SANDBOX/version-calls"
+container() {
+    printf '%s\n' "$*" >> "$VERSION_CALLS"
+    case "$1" in
+        --version) printf 'container CLI version 1.2.3\n' ;;
+        list) printf '%s\n' "$CONTAINER_JSON" ;;
+        *) printf 'Unexpected version side effect: %s\n' "$*" >&2; return 99 ;;
+    esac
+}
+brew() {
+    case "$*" in
+        --version) printf 'Homebrew 5.0.0\n' ;;
+        'list --versions') printf 'example-app 2.0\n' ;;
+        *) return 99 ;;
+    esac
+}
+nix-store() {
+    case "$3" in
+        /etc/profiles/per-user/*) printf '/nix/store/abc-home-manager-path\n' ;;
+        *-home-manager-path) printf '/nix/store/abc-jq-1.8.1-bin\n/nix/store/xyz-jq-1.8.1-man\n/nix/store/def-uv-0.9.0\n' ;;
+        /run/current-system/sw) return 0 ;;
+        *) return 99 ;;
+    esac
+}
+export -f container brew nix-store
+export CONTAINER_JSON='[{"configuration":{"id":"hermes-agent"},"status":{"state":"stopped"}}]'
+output="$(/bin/bash "$REPO_DIR/libexec/mana/version")"
+[[ "$output" == *'container CLI version 1.2.3'* ]]
+[[ "$output" == *'example-app 2.0'* ]]
+[[ "$output" == *'jq-1.8.1'* ]]
+[[ "$(printf '%s\n' "$output" | grep -c 'jq-1.8.1')" == 1 ]]
+[[ "$output" == *'stopped; tool versions unavailable'* ]]
+[[ "$(<"$VERSION_CALLS")" == $'--version\nlist --all --format json' ]]
+printf 'PASS version inventories installed packages without starting containers\n'
+export CONTAINER_JSON='not-json'
+output="$(/bin/bash "$REPO_DIR/libexec/mana/version")"
+[[ "$output" == *'invalid container inventory'* ]]
+printf 'PASS version tolerates unavailable metadata\n'
+
+container() {
+    printf '%s\n' "$*" >> "$VERSION_CALLS"
+    case "$*" in
+        --version) printf 'container CLI version 1.2.3\n' ;;
+        'list --all --format json') printf '[{"configuration":{"id":"hermes-agent"},"status":"running"}]\n' ;;
+        'exec hermes-agent /opt/hermes/.venv/bin/python --version') printf 'Python 3.13.5\n' ;;
+        'exec hermes-agent node --version') printf 'v26.5.1\n' ;;
+        'exec hermes-agent npm --version') printf '11.17.0\n' ;;
+        'exec hermes-agent /opt/hermes/.venv/bin/pip list --format json --disable-pip-version-check')
+            printf '[{"name":"hermes-agent","version":"0.20.6"},{"name":"searxng","version":"2026.8.29"}]\n' ;;
+        'exec hermes-agent npm list --global --depth=0 --json')
+            printf '{"dependencies":{"camofox-browser":{"version":"2.4.7"}}}\n' ;;
+        *) printf 'Unexpected version side effect: %s\n' "$*" >&2; return 99 ;;
+    esac
+}
+export -f container
+output="$(/bin/bash "$REPO_DIR/bin/mana" version)"
+[[ "$output" == *'hermes-agent  0.20.6'* ]]
+[[ "$output" == *'camofox-browser  2.4.7'* ]]
+[[ "$output" == *'searxng  2026.8.29'* ]]
+if grep -Eq '(^| )(start|stop|restart|run|install|update)( |$)' "$VERSION_CALLS"; then
+    printf 'FAIL version changed service state\n' >&2; exit 1
+fi
+printf 'PASS version reads running container tool metadata\n'
+if /bin/bash "$REPO_DIR/bin/mana" version unexpected >"$SANDBOX/output" 2>&1; then
+    printf 'FAIL version accepted an invalid argument\n' >&2; exit 1
+fi
+printf 'PASS version rejects invalid arguments\n'
