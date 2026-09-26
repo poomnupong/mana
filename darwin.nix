@@ -56,6 +56,7 @@
     };
     casks = [
       "iina"
+      "iterm2"
       "visual-studio-code"
       "lm-studio"
       "ollama-app"
