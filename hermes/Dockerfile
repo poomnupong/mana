@@ -8,7 +8,9 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ── Camofox anti-detection browser ──────────────────────
-RUN npm install -g camofox-browser
+# The bundled Node's default npm prefix is not on the runtime PATH.
+RUN npm install -g --prefix /usr/local camofox-browser && \
+    camofox-browser --version
 
 # ── Install SearXNG into the Hermes venv ─────────────────
 # SearXNG's setup.py imports its settings before pip resolves runtime deps.

@@ -119,6 +119,12 @@ dependencies before generating metadata; pip cannot install them afterward
 when that step fails. If an older Hermes image already exists, use
 `mana hermes rebuild` to apply the corrected recipe.
 
+If logs show `camofox-browser: command not found`, update the checkout and run
+`mana hermes rebuild`, not just `restart`. The recipe installs the Camofox CLI
+under `/usr/local/bin` and checks that it is executable during the build.
+The bundled Node runtime's default global npm directory is not on the service
+`PATH`.
+
 ## Apply And Update
 
 Declare CLI packages in [home.nix](../home.nix), GUI apps and Brew formulae in
