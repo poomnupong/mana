@@ -105,6 +105,10 @@ remove_legacy_brew() {
 
 install_app() {
     local info version asset_name url current tmp_dir dmg mount_point staged had_app=0
+    local REPO_DIR
+    REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+    . "$REPO_DIR/libexec/mana/installation-state"
+    mana_capture_baseline
     info="$(release_info)"
     version="$(printf '%s' "$info" | cut -f1)"
     asset_name="$(printf '%s' "$info" | cut -f2)"
@@ -133,6 +137,7 @@ install_app() {
         || die "The downloaded oMLX app has an invalid code signature."
     /usr/sbin/spctl --assess --type execute "$staged" 2>/dev/null \
         || die "Gatekeeper rejected the downloaded oMLX app."
+    mana_record_edit .omlx/settings.json
 
     if command -v brew >/dev/null 2>&1 && brew list --versions "$BREW_SERVICE" >/dev/null 2>&1; then
         log "Stopping the old Homebrew oMLX service..."
@@ -168,6 +173,7 @@ install_app() {
     trap - EXIT
 
     remove_legacy_brew
+    mana_record_install omlx
     [ "$had_app" -eq 1 ] && open -g "$APP"
     log "Installed oMLX $version. Start it with 'mana omlx start'."
     log "Future stable updates are available in the app or via 'mana omlx upgrade'."

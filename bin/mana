@@ -29,7 +29,7 @@ Commands:
     services    Review and control managed services and Apple containers
     omlx        Install, update, and control the oMLX app/server
     hermes      Control or chat with the Hermes container
-    uninstall   Remove one imperative component, data-safe by default
+    uninstall   Remove Mana or a component; preserve data/shared tools by default
 
 Examples:
     mana help omlx
@@ -38,6 +38,7 @@ Examples:
     mana doctor --fix
     mana hermes
     mana update
+    mana uninstall --dry-run
 EOF
 }
 

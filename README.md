@@ -63,7 +63,7 @@ and restart Hermes. Web search and browsing still use the network.
 | `mana bootstrap` | Reconcile the workstation, including installing/updating Apple container |
 | `mana omlx <command>` | App installation/update, lifecycle, status, logs, model IDs, and API key |
 | `mana hermes [command]` | Bare command opens chat; also `up`, `down`, `restart`, `rebuild`, `status`, `dashboard`, `logs` |
-| `mana uninstall <component>` | Remove `omlx`, `hermes`, or `container`; keep data unless explicitly purged |
+| `mana uninstall [component]` | Remove Mana by default, or select `omlx`, `hermes`, or `container`; retain data and shared tools unless removal is authorized |
 
 `mana version` reads local metadata without installing, updating, or starting
 anything. It includes the Mana Git revision (with `-dirty` for tracked edits),
@@ -150,10 +150,12 @@ in code; runtime discovery alone does not make a service managed.
 
 ```bash
 /bin/bash tests/lifecycle.sh
+/bin/bash tests/uninstall.sh
 ```
 
-The checks cover lifecycle regressions, version parsing, public command help,
-and local documentation file links. They use temporary homes and mocked
+The checks cover lifecycle regressions, version parsing, uninstall ownership,
+restoration and purge guards, public command help, and local documentation file
+links. They use temporary homes and mocked
 process/container commands. They do
 not stop host services, read real credentials, or download dependencies. Follow
 with `mana services` and `mana doctor` for live checks. Nix activation is a separate,

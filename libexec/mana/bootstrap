@@ -85,6 +85,9 @@ if [ "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
     die "Do NOT run this script with sudo. It prompts for sudo only when needed."
 fi
 
+. "$REPO_DIR/libexec/mana/installation-state"
+mana_capture_baseline
+
 # home.nix hard-codes ~/repo/mana/bin onto PATH (kept deliberately
 # simple — no path-detection wrapper). If the repo lives elsewhere everything
 # still works, but the bare `mana` command won't resolve; call it as ./bin/mana
@@ -112,6 +115,7 @@ if [ -f "$local_nix" ]; then
 fi
 
 if [ "$local_user" != "$current_user" ] || [ "$local_host" != "$current_host" ]; then
+    mana_record_edit local.nix
     log "Writing $local_nix"
     [ "$local_user" != "$current_user" ] && printf "    username: %s -> %s\n" "${local_user:-<unset>}" "$current_user"
     [ "$local_host" != "$current_host" ] && printf "    hostname: %s -> %s\n" "${local_host:-<unset>}" "$current_host"
@@ -150,6 +154,9 @@ if ! GIT_CONFIG_GLOBAL="$GIT_GLOBAL" git config --global user.email >/dev/null 2
     read -r gname
     printf "    git user.email (e.g. jane@example.com): "
     read -r gemail
+    if [ -n "$gname" ] || [ -n "$gemail" ]; then
+        mana_record_edit .gitconfig
+    fi
     [ -n "$gname" ]  && GIT_CONFIG_GLOBAL="$GIT_GLOBAL" git config --global user.name  "$gname"
     [ -n "$gemail" ] && GIT_CONFIG_GLOBAL="$GIT_GLOBAL" git config --global user.email "$gemail"
     if [ -z "$gname" ] && [ -z "$gemail" ]; then
@@ -167,6 +174,7 @@ if ! command -v nix >/dev/null 2>&1; then
     # shellcheck disable=SC1091
     . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
     command -v nix >/dev/null 2>&1 || die "Nix not on PATH after install — open a new shell and re-run."
+    mana_record_install nix
 else
     log "Nix present — skipping."
 fi
@@ -175,6 +183,7 @@ fi
 if ! command -v brew >/dev/null 2>&1; then
     log "Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    mana_record_install brew
 else
     log "Homebrew present — skipping."
 fi
@@ -199,6 +208,7 @@ if command -v darwin-rebuild >/dev/null 2>&1; then
 else
     sudo nix run nix-darwin#darwin-rebuild -- switch --flake "path:$flake_source"
 fi
+mana_record_casks
 
 # ── 7. Apple `container` runtime (install or upgrade) ────
 # Apple's container .pkg ships /usr/local/bin/update-container.sh for
@@ -262,6 +272,7 @@ if [ "${install_container:-0}" = "1" ]; then
     curl -fsSL -o "$tmp_pkg" "$pkg_url"
     log "Installing (sudo)..."
     sudo installer -pkg "$tmp_pkg" -target /
+    mana_record_install container
     rm -f "$tmp_pkg"
 fi
 
@@ -277,6 +288,7 @@ log "Installing/upgrading the official oMLX app..."
 "$REPO_DIR/libexec/mana/omlx" install
 
 omlx_settings="$HOME/.omlx/settings.json"
+mana_record_edit .omlx/settings.json
 mkdir -p "$HOME/.omlx"
 
 if [ ! -f "$omlx_settings" ]; then

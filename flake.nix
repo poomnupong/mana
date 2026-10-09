@@ -33,6 +33,28 @@
     cfg      = defaults // local;
     inherit (cfg) username hostname;
   in {
+    # Empty Home Manager activation removes Mana's managed files/packages before
+    # the nix-darwin uninstaller runs or a pre-Mana system is reactivated.
+    darwinConfigurations."${hostname}-uninstall" = nix-darwin.lib.darwinSystem {
+      inherit system;
+      modules = [
+        home-manager.darwinModules.home-manager
+        {
+          nix.enable = false;
+          system.primaryUser = username;
+          system.stateVersion = 5;
+          users.users.${username}.home = "/Users/${username}";
+          home-manager.useGlobalPkgs = true;
+          home-manager.useUserPackages = true;
+          home-manager.users.${username} = {
+            home.username = username;
+            home.homeDirectory = "/Users/${username}";
+            home.stateVersion = "25.05";
+            manual.manpages.enable = false;
+          };
+        }
+      ];
+    };
     darwinConfigurations.${hostname} = nix-darwin.lib.darwinSystem {
       inherit system;
       specialArgs = { inherit username; };

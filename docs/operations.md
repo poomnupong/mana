@@ -188,17 +188,65 @@ your only copy of sessions or plugin state.
 
 ## Uninstall And Reset
 
+`mana uninstall` now defaults to a full uninstall; component removal is still
+available. **Preview first**, then run the confirmed operation:
+
+```bash
+mana uninstall --dry-run
+mana uninstall
+# Optional: also delete Mana data, including Hermes host files and model weights.
+mana uninstall --purge
+```
+
+Full uninstall removes Mana's Home Manager packages/configuration and login
+startup, deactivates its nix-darwin configuration, and removes Hermes. It removes
+Homebrew casks and shared Nix/Homebrew/Apple container installations **only when
+an installation record establishes that Mana added them**. A pre-existing oMLX
+app is kept when recorded as such. Other container workloads, remaining Brew
+packages, or other user-profile Nix packages cause those shared tools to be retained.
+Shared container storage is kept even with full `--purge`; only Mana's volume
+is eligible for deletion. The repository is never deleted.
+Errors abort cleanup rather than reporting a successful removal.
+
+Bootstrap records a private baseline in `~/.local/state/mana/installation` before
+making changes. Rebuild/update and direct oMLX installation also establish a
+baseline when needed. It saves selected shell, Git, SSH, application settings,
+and local identity files, Brew application inventory, and a GC root for a prior
+nix-darwin generation. Full uninstall restores saved files (overwriting later
+edits) and reactivates the prior system when available. Keep this directory
+private: it can contain credentials. Completed records are retained for reference;
+a later installation archives them and records a new baseline.
+
+**This is not an exact machine rollback.** Existing installations, including those
+made before baseline recording was added, have no original-state snapshot.
+Uninstall can remove recognizable Mana configuration and restore available
+Home Manager collision backups, but retains shared tools and unrecorded casks.
+It cannot reconstruct overwritten settings, restore previous app versions,
+recover applications/data removed by Brew's forced cleanup, or undo arbitrary
+changes made by upstream installers. Use a pre-install system backup for exact
+recovery. A baseline cannot retroactively reconstruct a fresh Mac.
+The Ollama/Tailscale PF anchor is flushed only when recorded as newly added;
+otherwise its live rules are retained because their original state is unknown.
+
+Data is retained unless `--purge` is given. Full purge includes `hermes/.env`,
+`hermes/config.yaml`, memories, workspace, and the named volume. Recorded
+pre-existing host files/directories, oMLX data, and pre-existing or
+uninventoried Hermes volumes are retained. Purging an
+unrecorded legacy installation deletes these Mana-specific locations; back up
+anything valuable before confirming.
+
 | Component | Default behavior | `--purge` adds |
 |-----------|------------------|----------------|
+| `all` (default) | Full installation removal, ownership safeguards and baseline restoration | Delete Mana data, including host data not recorded as pre-existing |
 | `omlx` | Remove app; keep `~/.omlx/` | Remove oMLX data; `--keep-models` / `--keep-config` spare selected data |
 | `hermes` | Remove container and image; keep volume and host files | Delete the named volume, including sessions, plugins, and cron state |
 | `container` | Remove runtime while keeping data | Ask the upstream uninstaller to delete runtime data |
 
-Inspect with `mana uninstall <component> --dry-run`. Even Hermes purge retains
+Inspect with `mana uninstall <component> --dry-run`. Single-component Hermes purge retains
 host files. A security reset requires separately reviewing/replacing persistent
 code and configuration and rotating exposed credentials. Uninstalling Hermes does
-not change its declared login startup; disable that launch agent in Nix if you
-want it to stay uninstalled.
+not change its declared login startup; use full uninstall to remove that startup
+configuration as well.
 
 ## Git Identity And Migration
 

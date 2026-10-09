@@ -1,0 +1,180 @@
+#!/bin/bash
+# Private installation baseline. Source from lifecycle commands.
+
+mana_state_dir() {
+    printf '%s\n' "$HOME/.local/state/mana/installation"
+}
+
+mana_resolve_path() {
+    /usr/bin/perl -MCwd=abs_path -e 'my $p = abs_path($ARGV[0]); defined($p) or die "Cannot resolve $ARGV[0]\n"; print "$p\n";' "$1"
+}
+
+mana_home_files() {
+    printf '%s\n' .zshrc .zprofile .zshenv .zlogin .gitconfig \
+        .config/git/config .config/starship.toml .config/tmux/tmux.conf \
+        .config/gh/config.yml .ssh/config .omlx/settings.json \
+        Library/LaunchAgents/org.nix-community.home.mana-hermes.plist
+}
+
+mana_has_configuration() {
+    local agent="$HOME/Library/LaunchAgents/org.nix-community.home.mana-hermes.plist"
+    { [ -f "$agent" ] && grep -qF '/hermes/run.sh' "$agent"; } \
+        || { [ -f /run/current-system/etc/mana/home ] && grep -qxF "$HOME" /run/current-system/etc/mana/home; }
+}
+
+mana_capture_baseline() (
+    set -euo pipefail
+    local state parent staging item tool previous archive volumes
+    state="$(mana_state_dir)"
+    [ ! -L "$state" ] || { echo "Refusing symlinked Mana installation state: $state" >&2; return 1; }
+    if [ -f "$state/uninstalled" ]; then
+        archive="$(mktemp -d "${state%/*}/previous.XXXXXX")"
+        mv "$state" "$archive/installation"
+    fi
+    if [ -d "$state" ]; then
+        [ "$(cat "$state/version")" = 1 ] || return 1
+        [ "$(cat "$state/repository")" = "$REPO_DIR" ] || {
+            echo "Mana installation state belongs to another checkout; use that checkout." >&2
+            return 1
+        }
+        return 0
+    fi
+    parent="${state%/*}"
+    mkdir -p "$parent"
+    staging="$(mktemp -d "$parent/.baseline.XXXXXX")"
+    trap 'rm -rf "$staging"' EXIT
+    chmod 700 "$staging"
+    printf '1\n' > "$staging/version"
+    printf '%s\n' "$REPO_DIR" > "$staging/repository"
+    if mana_has_configuration; then
+        printf 'legacy\n' > "$staging/baseline"
+        echo "Warning: existing Mana configuration has no original-state baseline; shared tools will be retained." >&2
+    else
+        printf 'recorded\n' > "$staging/baseline"
+    fi
+    for tool in nix brew container omlx; do
+        if [ "$(cat "$staging/baseline")" = legacy ]; then
+            printf 'unknown\n' > "$staging/$tool.before"
+        elif command -v "$tool" >/dev/null 2>&1 \
+            || { [ "$tool" = nix ] && [ -d /nix ]; } \
+            || { [ "$tool" = brew ] && { [ -x /opt/homebrew/bin/brew ] || [ -x /usr/local/bin/brew ]; }; } \
+            || { [ "$tool" = container ] && [ -x /usr/local/bin/uninstall-container.sh ]; } \
+            || { [ "$tool" = omlx ] && [ -d /Applications/oMLX.app ]; }; then
+            printf 'present\n' > "$staging/$tool.before"
+        else
+            printf 'absent\n' > "$staging/$tool.before"
+        fi
+    done
+    if [ "$(cat "$staging/baseline")" = recorded ]; then
+        mkdir "$staging/home"
+        while IFS= read -r item; do
+            if [ -e "$HOME/$item" ] || [ -L "$HOME/$item" ]; then
+                mkdir -p "$staging/home/$(dirname "$item")"
+                cp -pP "$HOME/$item" "$staging/home/$item"
+            fi
+        done < <(mana_home_files)
+        if [ -e "$REPO_DIR/local.nix" ]; then
+            cp -p "$REPO_DIR/local.nix" "$staging/local.nix"
+        fi
+        if [ -e /etc/pf.anchors/ollama-tailscale ]; then
+            printf 'present\n' > "$staging/pf-anchor.before"
+        else
+            printf 'absent\n' > "$staging/pf-anchor.before"
+        fi
+        if command -v brew >/dev/null 2>&1; then
+            brew list --cask -1 > "$staging/casks.before"
+        elif [ -x /opt/homebrew/bin/brew ]; then
+            /opt/homebrew/bin/brew list --cask -1 > "$staging/casks.before"
+        elif [ -x /usr/local/bin/brew ]; then
+            /usr/local/bin/brew list --cask -1 > "$staging/casks.before"
+        else
+            : > "$staging/casks.before"
+        fi
+        find /Applications -maxdepth 1 -name '*.app' -print > "$staging/apps.before"
+        previous="$(readlink /run/current-system 2>/dev/null || true)"
+        if [ -n "$previous" ]; then
+            if [[ "$previous" != /nix/store/* ]]; then
+                previous="$(mana_resolve_path /run/current-system)"
+            fi
+            case "$previous" in
+                /nix/store/*) printf '%s\n' "$previous" > "$staging/system.before" ;;
+                *) echo "Unexpected nix-darwin profile target: $previous" >&2; return 1 ;;
+            esac
+        fi
+        if [ -e "$HOME/.omlx" ] || [ -L "$HOME/.omlx" ]; then
+            printf 'present\n' > "$staging/omlx-data.before"
+        else
+            printf 'absent\n' > "$staging/omlx-data.before"
+        fi
+        if [ "$(cat "$staging/container.before")" = absent ]; then
+            printf 'absent\n' > "$staging/hermes-volume.before"
+        elif volumes="$(container volume list --quiet 2>/dev/null)"; then
+            if printf '%s\n' "$volumes" | grep -qxF hermes-data; then
+                printf 'present\n' > "$staging/hermes-volume.before"
+            else
+                printf 'absent\n' > "$staging/hermes-volume.before"
+            fi
+        else
+            printf 'unknown\n' > "$staging/hermes-volume.before"
+            echo "Warning: container volumes could not be inventoried; full uninstall will retain the Hermes volume." >&2
+        fi
+        for item in hermes/.env hermes/config.yaml hermes/data/memories hermes/workspace; do
+            if [ -e "$REPO_DIR/$item" ] || [ -L "$REPO_DIR/$item" ]; then
+                printf '%s\n' "$item" >> "$staging/host-data.before"
+            fi
+        done
+    fi
+    mv "$staging" "$state"
+    # Register the root at its permanent location after moving the baseline.
+    if [ -f "$state/system.before" ]; then
+        nix-store --add-root "$state/prior-system" --indirect -r "$(cat "$state/system.before")" >/dev/null
+    fi
+)
+
+mana_record_install() {
+    local state
+    state="$(mana_state_dir)"
+    [ -d "$state" ] || return 0
+    if [ "$(cat "$state/$1.before")" = absent ]; then
+        : > "$state/$1.installed"
+    fi
+}
+
+mana_record_edit() {
+    local state
+    state="$(mana_state_dir)"
+    if [ "$1" = local.nix ]; then
+        touch "$state/local.changed"
+    else
+        touch "$state/home.changed"
+        grep -qxF "$1" "$state/home.changed" || printf '%s\n' "$1" >> "$state/home.changed"
+    fi
+}
+
+mana_record_casks() {
+    local state cask app apps existed installed
+    state="$(mana_state_dir)"
+    touch "$state/configuration.installed"
+    [ "$(cat "$state/baseline")" = recorded ] || return 0
+    installed="$(brew list --cask -1)"
+    touch "$state/casks.installed"
+    while IFS= read -r cask; do
+        [ -n "$cask" ] || continue
+        printf '%s\n' "$installed" | grep -qxF "$cask" || continue
+        grep -qxF "$cask" "$state/casks.before" && continue
+        existed=0
+        apps="$(brew info --json=v2 --cask "$cask" | jq -r '.casks[0].artifacts[] | .app? // empty | .[] | select(type == "string")')"
+        if [ -z "$apps" ]; then
+            echo "Warning: cannot establish application ownership for cask $cask; not recording it for removal." >&2
+            continue
+        fi
+        while IFS= read -r app; do
+            [ -n "$app" ] || continue
+            if grep -qxF "/Applications/${app##*/}" "$state/apps.before"; then
+                existed=1
+            fi
+        done <<< "$apps"
+        [ "$existed" -eq 0 ] || continue
+        grep -qxF "$cask" "$state/casks.installed" || printf '%s\n' "$cask" >> "$state/casks.installed"
+    done < <(awk '/^[[:space:]]*casks = \[/ { in_casks=1; next } in_casks && /\];/ { exit } in_casks && /"/ { gsub(/[ "]/, ""); print }' "$REPO_DIR/darwin.nix")
+}

@@ -89,7 +89,7 @@
           'services:review and control managed services and Apple containers'
           'omlx:install, update, and control the oMLX app/server'
           'hermes:control or chat with the Hermes container'
-          'uninstall:remove one imperative component'
+          'uninstall:remove Mana or a selected component'
           'help:show command help'
         )
         if (( CURRENT == 2 )); then
@@ -121,10 +121,10 @@
             ;;
           uninstall)
             if (( CURRENT == 3 )); then
-              subcommands=(omlx hermes container)
+              subcommands=(all omlx hermes container)
               _describe 'component' subcommands
             else
-              _arguments '--purge[also delete component data]' \
+              _arguments '--purge[also delete Mana data]' \
                 '--keep-models[preserve oMLX model weights]' \
                 '--keep-config[preserve oMLX settings]' \
                 '--yes[skip confirmation]' \

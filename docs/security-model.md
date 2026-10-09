@@ -70,6 +70,11 @@ state and writable recipes from a trusted source, and rotate exposed credentials
 `mana uninstall hermes --purge` deletes the named volume but still keeps host
 files. See [operations](operations.md) for backup and purge behavior.
 
+Full uninstall is installation cleanup, not a security reset or an exact machine
+rollback. Its private baseline at `~/.local/state/mana/installation` can contain
+original configuration files and credentials; it is retained after uninstall
+and is never mounted into Hermes or included in the Nix source snapshot.
+
 ## Host-Native Assistants
 
 A desktop frontend does not by itself change the backend's privileges. A frontend

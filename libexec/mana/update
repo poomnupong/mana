@@ -35,6 +35,8 @@ for arg in "$@"; do
     esac
 done
 
+. "$REPO_DIR/libexec/mana/installation-state"
+mana_capture_baseline
 request_admin
 
 # ── Load Homebrew onto PATH ──────────────────────────────
@@ -84,6 +86,7 @@ if command -v darwin-rebuild >/dev/null 2>&1; then
 else
     sudo nix run nix-darwin#darwin-rebuild -- switch --flake "path:$flake_source"
 fi
+mana_record_casks
 
 # ── 4. Official oMLX app ─────────────────────────────────
 log "Checking the stable oMLX app channel..."

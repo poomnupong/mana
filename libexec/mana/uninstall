@@ -1,56 +1,69 @@
 #!/bin/bash
-# mana — remove a single imperative component, retaining data by default
+# mana — remove Mana, or a selected component, retaining data by default
 #
-# Scope: this ONLY tears down imperative runtime state (application bundles,
-# Apple `container` objects, on-disk caches). It NEVER edits darwin.nix /
-# flake.nix / home.nix. Reinstall oMLX or Apple container with `mana bootstrap`,
+# Full uninstall removes managed configuration, login startup, Hermes, and
+# recorded Mana-installed apps/tools. Shared tools are kept unless installation
+# ownership was recorded. A pre-Mana baseline is restored when available.
+# Old installations have no baseline: exact original-state recovery is impossible.
+# It NEVER edits tracked Nix configuration. Reinstall with `mana bootstrap`,
 # or Hermes with `mana hermes rebuild`. Nix activation alone does not reinstall
 # imperative components. Retained data is not sanitized by reinstalling:
 #   mana uninstall omlx        # remove the app, retain models/settings
 #   mana omlx install          # reinstall the app using those settings
 #
-# Nix-managed things (CLI packages, casks, fonts) are intentionally NOT
-# handled here — remove those by editing the nix files (the declarative
-# path).
-#
-# Usage: mana uninstall <component> [flags]
+# Usage: mana uninstall [all|omlx|hermes|container] [flags]
 #
 # Components:
+#   all         Default: remove Mana configuration and recorded installations.
 #   omlx        Stop + remove /Applications/oMLX.app. Keeps ~/.omlx by default.
 #   hermes      `run.sh down` + delete container + remove toolbox image.
 #               Keeps hermes-data and host files (.env, config, memories, workspace).
 #   container   Apple container runtime via /usr/local/bin/uninstall-container.sh.
 #
 # Flags:
-#   --purge        Also delete user data (omlx: ~/.omlx; hermes: hermes-data
+#   --purge        Also delete user data (all: includes Hermes host data;
+#                  omlx: ~/.omlx; hermes: hermes-data
 #                  volume; container: pass -d instead of -k).
 #   --keep-models  (omlx, with --purge) spare ~/.omlx/models/ (the weights).
 #   --keep-config  (omlx, with --purge) spare settings.json + model_settings.json.
 #   --yes          Don't prompt for confirmation.
 #   --dry-run      Print what would happen; change nothing.
 #
-# NOTE: hermes NEVER deletes host files (hermes/.env, hermes/config.yaml,
+# NOTE: single-component hermes uninstall NEVER deletes host files (hermes/.env, hermes/config.yaml,
 # hermes/data/memories, hermes/workspace). --purge only removes the
 # container's named volume, including sessions and plugin/cron state.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$REPO_DIR/libexec/mana/installation-state"
+JQ="$(command -v jq || true)"
+if [ -n "$JQ" ] && [ -f "$JQ" ]; then
+    # Home Manager teardown removes its profile links; use the store executable.
+    JQ="$(mana_resolve_path "$JQ")"
+fi
 
 log()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m  %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mxx\033[0m  %s\n" "$*" >&2; exit 1; }
-run()  { # echo + execute, or just echo under --dry-run
-    if [ "$DRY_RUN" -eq 1 ]; then printf "   [dry-run] %s\n" "$*"; else eval "$@"; fi
+json() { [ -n "$JQ" ] || die "jq is required to inspect container state."; "$JQ" "$@"; }
+run() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '   [dry-run]'; printf ' %q' "$@"; printf '\n'
+    else
+        "$@"
+    fi
 }
 
 # ── Parse args ───────────────────────────────────────────
-COMPONENT="${1:-}"
-[ -n "$COMPONENT" ] || die "Usage: mana uninstall <omlx|hermes|container> [--purge] [--keep-models] [--keep-config] [--yes] [--dry-run]"
+COMPONENT=all
+if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+    COMPONENT="$1"
+    shift
+fi
 case "$COMPONENT" in
     -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
 esac
-shift || true
 
 PURGE=0; KEEP_MODELS=0; KEEP_CONFIG=0; ASSUME_YES=0; DRY_RUN=0
 for arg in "$@"; do
@@ -60,15 +73,21 @@ for arg in "$@"; do
         --keep-config) KEEP_CONFIG=1 ;;
         --yes|-y)      ASSUME_YES=1 ;;
         --dry-run)     DRY_RUN=1 ;;
+        -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
         *) die "Unknown flag: $arg (try --help)" ;;
     esac
 done
+case "$COMPONENT" in all|omlx|hermes|container) ;; *) die "Unknown component '$COMPONENT'. Valid: all, omlx, hermes, container." ;; esac
+if [ "$KEEP_MODELS" -eq 1 ] || [ "$KEEP_CONFIG" -eq 1 ]; then
+    [ "$PURGE" -eq 1 ] && { [ "$COMPONENT" = all ] || [ "$COMPONENT" = omlx ]; } \
+        || die "--keep-models/--keep-config require --purge and all or omlx."
+fi
 
 confirm() {
     [ "$ASSUME_YES" -eq 1 ] && return 0
     [ "$DRY_RUN" -eq 1 ] && return 0
     printf "\033[1;33m?\033[0m  %s [y/N] " "$1"
-    read -r reply
+    read -r reply || die "Confirmation required; no changes made."
     case "$reply" in y|Y|yes|YES) return 0 ;; *) die "Aborted." ;; esac
 }
 
@@ -97,14 +116,17 @@ uninstall_omlx() {
     fi
     confirm "Proceed with oMLX uninstall?"
 
-    if [ -x "$HOME/.omlx/bin/omlx" ]; then
-        run "'$HOME/.omlx/bin/omlx' stop >/dev/null 2>&1 || true"
+    if [ -x "$HOME/.omlx/bin/omlx" ] || [ -x /Applications/oMLX.app/Contents/MacOS/omlx-cli ]; then
+        run "$REPO_DIR/libexec/mana/omlx" stop
+    fi
+    if pgrep -f '/oMLX.app/Contents/MacOS/oMLX' >/dev/null; then
+        run /usr/bin/osascript -e 'tell application id "app.omlx" to quit'
     fi
     if [ -d /Applications/oMLX.app ]; then
         if [ -w /Applications ]; then
-            run "rm -rf '/Applications/oMLX.app'"
+            run rm -rf /Applications/oMLX.app
         else
-            run "sudo rm -rf '/Applications/oMLX.app'"
+            run sudo rm -rf /Applications/oMLX.app
         fi
     else
         warn "oMLX.app not installed — nothing to remove."
@@ -112,7 +134,7 @@ uninstall_omlx() {
 
     if [ "$PURGE" -eq 1 ] && [ -d "$omlx_dir" ]; then
         if [ "$KEEP_MODELS" -eq 0 ] && [ "$KEEP_CONFIG" -eq 0 ]; then
-            run "rm -rf '$omlx_dir'"
+            run rm -rf "$omlx_dir"
         else
             # Selective purge: delete everything under ~/.omlx except the
             # spared entries. Iterate top-level children.
@@ -125,35 +147,54 @@ uninstall_omlx() {
                 if [ "$KEEP_CONFIG" -eq 1 ] && { [ "$base" = "settings.json" ] || [ "$base" = "model_settings.json" ]; }; then
                     log "   keeping $entry"; continue
                 fi
-                run "rm -rf '$entry'"
+                run rm -rf "$entry"
             done
         fi
     fi
-    log "oMLX uninstalled. Reinstall with: mana bootstrap   (or: mana omlx install)"
+    log "oMLX uninstall $([ "$DRY_RUN" -eq 1 ] && echo 'planned (dry-run)' || echo 'complete'). Reinstall with: mana bootstrap   (or: mana omlx install)"
 }
 
 # ── hermes ───────────────────────────────────────────────
 uninstall_hermes() {
+    local purge_volume="$PURGE"
     log "Planning Hermes uninstall:"
     echo "   - stop + delete container 'hermes-agent'"
     echo "   - remove image 'hermes-toolbox:latest'"
-    if [ "$PURGE" -eq 1 ]; then
+    if [ "$PURGE" -eq 1 ] && [ "$COMPONENT" = all ] \
+        && [ -f "$(mana_state_dir)/hermes-volume.before" ] \
+        && [ "$(cat "$(mana_state_dir)/hermes-volume.before")" != absent ]; then
+        warn "Keeping pre-existing or unrecorded Hermes volume, even with --purge."
+        purge_volume=0
+    elif [ "$PURGE" -eq 1 ]; then
         echo "   - delete container volume 'hermes-data'"
     fi
-    echo "   - host files are ALWAYS kept: hermes/.env, hermes/config.yaml, hermes/data/memories, hermes/workspace"
+    echo "   - this component step keeps host files; only full uninstall --purge removes Mana host data"
     confirm "Proceed with Hermes uninstall?"
 
     if command -v container >/dev/null 2>&1; then
-        run "'$REPO_DIR/hermes/run.sh' down >/dev/null 2>&1 || true"
-        run "container delete hermes-agent >/dev/null 2>&1 || true"
-        run "container image delete hermes-toolbox:latest >/dev/null 2>&1 || true"
-        if [ "$PURGE" -eq 1 ]; then
-            run "container volume delete hermes-data >/dev/null 2>&1 || true"
+        local objects
+        objects="$(container list --all --format json)"
+        printf '%s\n' "$objects" | json -e 'type == "array"' >/dev/null || die "Invalid container inventory."
+        if printf '%s\n' "$objects" | json -e 'any(.[]; .configuration.id == "hermes-agent")' >/dev/null; then
+            if printf '%s\n' "$objects" | json -e 'any(.[]; .configuration.id == "hermes-agent" and ((.status | if type == "object" then .state else . end) == "running"))' >/dev/null; then
+                run container stop hermes-agent
+            fi
+            run container delete hermes-agent
+        fi
+        if container image inspect hermes-toolbox:latest >/dev/null 2>&1; then
+            run container image delete hermes-toolbox:latest
+        fi
+        if [ "$purge_volume" -eq 1 ]; then
+            local volumes
+            volumes="$(container volume list --quiet)"
+            if printf '%s\n' "$volumes" | grep -qxF hermes-data; then
+                run container volume delete hermes-data
+            fi
         fi
     else
         warn "Apple 'container' not found — nothing to delete."
     fi
-    log "Hermes uninstalled. Reinstall with: mana hermes rebuild"
+    log "Hermes uninstall $([ "$DRY_RUN" -eq 1 ] && echo 'planned (dry-run)' || echo 'complete'). Reinstall with: mana hermes rebuild"
 }
 
 # ── container (Apple runtime) ────────────────────────────
@@ -165,11 +206,223 @@ uninstall_container() {
     echo "   - run $script $flag  ($([ "$flag" = "-k" ] && echo 'keep' || echo 'DELETE') user data)"
     [ -x "$script" ] || die "$script not found — is the Apple container runtime installed?"
     confirm "Proceed with Apple container uninstall?"
-    run "sudo '$script' $flag"
-    log "Apple container removed. Reinstall with: mana bootstrap   (re-downloads the latest .pkg)"
+    run sudo "$script" "$flag"
+    log "Apple container uninstall $([ "$DRY_RUN" -eq 1 ] && echo 'planned (dry-run)' || echo 'complete'). Reinstall with: mana bootstrap   (re-downloads the latest .pkg)"
+}
+
+uninstall_all() {
+    local state baseline=legacy clean_system="" uninstaller="" previous="" item cask inventory script hostname active_system removing_config=0
+    state="$(mana_state_dir)"
+    if [ -f "$state/uninstalled" ]; then
+        log "Full uninstall already ran; no changes made. Bootstrap again before another full uninstall."
+        return 0
+    fi
+    if [ -d "$state" ]; then
+        [ ! -L "$state" ] && [ "$(cat "$state/version")" = 1 ] || die "Invalid installation baseline: $state"
+        [ "$(cat "$state/repository")" = "$REPO_DIR" ] || die "Use the checkout recorded in $state/repository."
+        baseline="$(cat "$state/baseline")"
+        case "$baseline" in recorded|legacy) ;; *) die "Invalid baseline type." ;; esac
+        if [ -f "$state/system.before" ]; then
+            previous="$(cat "$state/system.before")"
+            case "$previous" in /nix/store/*) ;; *) die "Invalid prior system path." ;; esac
+            [ -x "$previous/activate" ] || die "The pre-Mana Nix generation is unavailable; refusing partial rollback."
+        fi
+    fi
+    active_system="$(readlink /run/current-system 2>/dev/null || true)"
+    log "Planning full Mana uninstall:"
+    echo "   - disable Mana login startup and remove its Nix/Home Manager configuration"
+    echo "   - remove Hermes container/image and Mana-installed oMLX"
+    echo "   - remove only recorded Mana-installed Homebrew casks and shared tools"
+    echo "   - keep the repository; $([ "$PURGE" -eq 1 ] && echo 'DELETE Mana data (--purge)' || echo 'retain models, settings, memories and sessions')"
+    if [ "$baseline" = recorded ]; then
+        echo "   - restore saved pre-Mana configuration files (overwrites later edits)"
+        [ -z "$previous" ] || echo "   - reactivate pre-Mana system: $previous"
+    else
+        warn "No original-state baseline. Shared Nix, Homebrew, Apple container and unrecorded casks will be kept."
+        warn "Pre-Mana settings and software previously removed by bootstrap cannot be reconstructed."
+    fi
+    if mana_has_configuration; then
+        removing_config=1
+        command -v nix >/dev/null 2>&1 || die "Nix is required to remove the managed configuration."
+        uninstaller="$(command -v darwin-uninstaller)" || die "darwin-uninstaller is required before teardown."
+        if [ -f "$uninstaller" ]; then
+            uninstaller="$(mana_resolve_path "$uninstaller")"
+        fi
+        [ -f "$REPO_DIR/local.nix" ] || die "local.nix is required to build the empty Home Manager configuration."
+    elif [ -n "$active_system" ]; then
+        if [ "$baseline" = legacy ] || [ -f "$state/configuration.installed" ]; then
+            die "The active Nix configuration is not identifiable as Mana. Refusing to alter another configuration; use component uninstalls."
+        fi
+        warn "Keeping the pre-existing Nix configuration; this installation did not activate Mana configuration."
+    fi
+    if command -v container >/dev/null 2>&1; then
+        inventory="$(container list --all --format json)" \
+            || die "Cannot inspect Apple containers; start the runtime before uninstalling."
+        printf '%s\n' "$inventory" | json -e 'type == "array"' >/dev/null || die "Invalid container inventory."
+    fi
+    confirm "Remove Mana installation? Saved configuration restoration may overwrite later edits."
+    ASSUME_YES=1
+
+    # Build before stopping anything so evaluation/build failure leaves services intact.
+    if mana_has_configuration; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            echo "   [dry-run] build and activate the empty Home Manager configuration"
+            echo "   [dry-run] run darwin-uninstaller; restore the prior Nix system if recorded"
+            if [ -f "$state/pf-anchor.before" ] && [ "$(cat "$state/pf-anchor.before")" = absent ]; then
+                run sudo /sbin/pfctl -a ollama-tailscale -F rules
+            else
+                warn "Keeping the Ollama/Tailscale PF anchor: its previous state is unrecorded or pre-existing."
+            fi
+        else
+            local flake_source
+            flake_source="$("$REPO_DIR/libexec/mana/flake-source")"
+            trap 'rm -rf "$flake_source"' EXIT
+            hostname="$(awk -F\" '/^[[:space:]]*hostname[[:space:]]*=/ { print $2; exit }' "$REPO_DIR/local.nix")"
+            [ -n "$hostname" ] || die "No hostname in local.nix."
+            clean_system="$(nix build --no-link --print-out-paths "path:$flake_source#darwinConfigurations.${hostname}-uninstall.system")"
+            [ -x "$clean_system/sw/bin/darwin-rebuild" ] || die "Missing cleanup activation."
+            run sudo "$clean_system/sw/bin/darwin-rebuild" activate
+            run sudo "$uninstaller" </dev/null
+            if [ -f "$state/pf-anchor.before" ] && [ "$(cat "$state/pf-anchor.before")" = absent ]; then
+                run sudo /sbin/pfctl -a ollama-tailscale -F rules
+            else
+                warn "Keeping the Ollama/Tailscale PF anchor: its previous state is unrecorded or pre-existing."
+            fi
+            if [ -n "$previous" ]; then
+                run sudo nix-env --profile /nix/var/nix/profiles/system --set "$previous"
+                run sudo "$previous/sw/bin/darwin-rebuild" activate
+            fi
+            rm -rf "$flake_source"
+            trap - EXIT
+        fi
+    fi
+    uninstall_hermes
+    if [ "$baseline" = legacy ] || [ -f "$state/omlx.installed" ]; then
+        if [ "$baseline" = recorded ] && [ "$(cat "$state/omlx-data.before")" = present ]; then
+            warn "Keeping pre-existing oMLX data, even with --purge."
+            local saved_purge="$PURGE"
+            PURGE=0
+            uninstall_omlx
+            PURGE="$saved_purge"
+        else
+            uninstall_omlx
+        fi
+    else
+        warn "Keeping pre-existing or unrecorded oMLX."
+    fi
+    if [ -f "$state/casks.installed" ] && command -v brew >/dev/null 2>&1; then
+        inventory="$(brew list --cask -1)"
+        while IFS= read -r cask; do
+            [ -n "$cask" ] || continue
+            if printf '%s\n' "$inventory" | grep -qxF "$cask"; then
+                run env HOMEBREW_NO_AUTOREMOVE=1 brew uninstall --cask "$cask"
+            fi
+        done < "$state/casks.installed"
+    fi
+    if [ "$baseline" = recorded ]; then
+        while IFS= read -r item; do
+            case "$item" in
+                .gitconfig|.omlx/settings.json)
+                    [ -f "$state/home.changed" ] && grep -qxF "$item" "$state/home.changed" || continue ;;
+                *)
+                    [ "$removing_config" -eq 1 ] || [ -f "$state/configuration.installed" ] || continue ;;
+            esac
+            [ "$item" != .omlx/settings.json ] || [ "$KEEP_CONFIG" -eq 0 ] || continue
+            if [ -e "$state/home/$item" ] || [ -L "$state/home/$item" ]; then
+                run mkdir -p "$HOME/$(dirname "$item")"
+                run rm -f "$HOME/$item"
+                run cp -pP "$state/home/$item" "$HOME/$item"
+            elif [ "$item" != .omlx/settings.json ] && { [ -f "$HOME/$item" ] || [ -L "$HOME/$item" ]; }; then
+                run rm -f "$HOME/$item"
+            fi
+        done < <(mana_home_files)
+        if [ -f "$state/local.changed" ]; then
+            if [ -f "$state/local.nix" ]; then
+                run cp -p "$state/local.nix" "$REPO_DIR/local.nix"
+            else
+                run rm -f "$REPO_DIR/local.nix"
+            fi
+        fi
+    else
+        # Home Manager leaves collision backups in place; restore only missing targets.
+        while IFS= read -r item; do
+            if [ -e "$HOME/$item.hm-backup" ] && [ ! -e "$HOME/$item" ] && [ ! -L "$HOME/$item" ]; then
+                run mv "$HOME/$item.hm-backup" "$HOME/$item"
+            fi
+        done < <(mana_home_files)
+    fi
+    if [ "$PURGE" -eq 1 ]; then
+        for item in hermes/.env hermes/config.yaml hermes/data/memories hermes/workspace; do
+            if [ -f "$state/host-data.before" ] && grep -qxF "$item" "$state/host-data.before"; then
+                warn "Keeping pre-existing $item."
+            elif [ -d "$REPO_DIR/$item" ] && [ ! -L "$REPO_DIR/$item" ]; then
+                run rm -rf "$REPO_DIR/$item"
+            else
+                run rm -f "$REPO_DIR/$item"
+            fi
+        done
+    fi
+    if [ -f "$state/container.installed" ]; then
+        inventory="$(container list --all --format json)"
+        printf '%s\n' "$inventory" | json -e 'type == "array"' >/dev/null || die "Invalid container inventory."
+        if printf '%s\n' "$inventory" | json -e 'any(.[]; .configuration.id != "buildkit" and .configuration.id != "hermes-agent")' >/dev/null; then
+            warn "Keeping Apple container: other workloads are present."
+        else
+            # Full purge deletes only Mana data, not unrelated runtime storage.
+            local container_purge="$PURGE"
+            PURGE=0
+            uninstall_container
+            PURGE="$container_purge"
+            warn "Container storage retained; only the Mana volume is eligible for full --purge."
+        fi
+    fi
+    if [ -f "$state/brew.installed" ] && command -v brew >/dev/null 2>&1; then
+        inventory="$(brew list --formula -1 && brew list --cask -1)"
+        if [ "$DRY_RUN" -eq 1 ] && [ -f "$state/casks.installed" ]; then
+            local remaining=""
+            while IFS= read -r cask; do
+                [ -n "$cask" ] || continue
+                grep -qxF "$cask" "$state/casks.installed" || remaining="${remaining}${cask}"$'\n'
+            done <<< "$inventory"
+            inventory="$remaining"
+        fi
+        if [ -n "$inventory" ]; then
+            warn "Keeping Homebrew: other installed packages remain."
+        elif [ "$DRY_RUN" -eq 1 ]; then
+            echo "   [dry-run] download and run the official Homebrew uninstaller"
+        else
+            script="$(mktemp -t mana-brew-uninstall)"
+            curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/uninstall.sh -o "$script"
+            /bin/bash "$script" --force --skip-cache-and-logs
+            rm -f "$script"
+        fi
+    fi
+    active_system="$(readlink /run/current-system 2>/dev/null || true)"
+    if [ -f "$state/nix.installed" ] && { [ -z "$active_system" ] \
+        || { [ "$DRY_RUN" -eq 1 ] && [ "$removing_config" -eq 1 ] && [ -z "$previous" ]; }; }; then
+        if ! inventory="$(nix profile list --json)"; then
+            warn "Keeping Nix: other user packages could not be inventoried."
+        elif ! printf '%s\n' "$inventory" | json -e '.elements | type == "object"' >/dev/null; then
+            die "Invalid Nix profile inventory; Nix was retained."
+        elif printf '%s\n' "$inventory" | json -e '.elements | length > 0' >/dev/null; then
+            warn "Keeping Nix: other user packages remain."
+        else
+            [ -x /nix/nix-installer ] || die "The official Nix uninstaller is unavailable; Nix was retained."
+            run sudo /nix/nix-installer uninstall --no-confirm
+        fi
+    fi
+    if [ "$DRY_RUN" -eq 0 ]; then
+        mkdir -p "$state"
+        chmod 700 "$state"
+        touch "$state/uninstalled"
+    fi
+    log "Mana uninstall actions $([ "$DRY_RUN" -eq 1 ] && echo 'planned (dry-run)' || echo 'complete'). Retained items are listed above; exact original-state recovery is not guaranteed."
+    echo "   Close this terminal and open a new one to discard the old shell configuration."
+    echo "   Installation baseline retained at $state."
 }
 
 case "$COMPONENT" in
+    all)       uninstall_all ;;
     omlx)      uninstall_omlx ;;
     hermes)    uninstall_hermes ;;
     container) uninstall_container ;;

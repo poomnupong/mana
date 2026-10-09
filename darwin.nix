@@ -7,6 +7,7 @@
 
   # System-level packages (available to all users)
   environment.systemPackages = [ ];
+  environment.etc."mana/home".text = "/Users/${username}\n";
 
   # Expose nix profile paths to GUI apps
   environment.etc."paths.d/nix".text = ''

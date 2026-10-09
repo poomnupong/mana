@@ -17,6 +17,8 @@ cd "$REPO_DIR"
     echo "local.nix is missing; run mana bootstrap first." >&2
     exit 1
 }
+. "$REPO_DIR/libexec/mana/installation-state"
+mana_capture_baseline
 
 # Build a temporary flake source from tracked files plus local.nix. This keeps
 # ignored secrets/runtime data out of the Nix store and leaves Git untouched.
@@ -32,3 +34,4 @@ if command -v darwin-rebuild >/dev/null 2>&1; then
 else
     sudo nix run nix-darwin#darwin-rebuild -- switch --flake "path:$flake_source"
 fi
+mana_record_casks
