@@ -84,24 +84,45 @@ mana_capture_baseline
 [[ "$(stat -f '%Lp' "$state" 2>/dev/null || stat -c '%a' "$state")" == 700 ]]
 printf 'PASS baseline is private and reruns preserve original configuration\n'
 
-for args in '--keep-models' 'hermes --purge --keep-config' 'unknown' '--nonsense'; do
+help="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" help)"
+for args in '' '--help' '-h'; do
+    output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" $args </dev/null)"
+    [[ "$output" == "$help" ]]
+done
+[[ "$help" == *'Warnings:'* ]]
+[[ "$help" == *'hermes'* && "$help" == *'omlx'* && "$help" == *'container'* && "$help" == *'all'* ]]
+[[ "$(/bin/bash "$SOURCE_DIR/bin/mana" uninstall help)" == "$help" ]]
+[ ! -s "$CALLS" ]
+[[ "$(cat "$HOME/.ssh/config")" == 'edited SSH configuration' ]]
+printf 'PASS bare uninstall and help aliases only explain choices and warnings\n'
+
+for args in '--keep-models' 'all --keep-models' 'hermes --purge --keep-config' 'unknown' '--nonsense' '--dry-run' '--yes' 'help --purge'; do
     if /bin/bash "$REPO_DIR/libexec/mana/uninstall" $args > "$SANDBOX/output" 2>&1; then
         printf 'FAIL accepted invalid uninstall arguments: %s\n' "$args" >&2; exit 1
     fi
 done
-if /bin/bash "$REPO_DIR/libexec/mana/uninstall" </dev/null > "$SANDBOX/output" 2>&1; then
+if /bin/bash "$REPO_DIR/libexec/mana/uninstall" all </dev/null > "$SANDBOX/output" 2>&1; then
     printf 'FAIL full uninstall accepted missing confirmation\n' >&2; exit 1
 fi
 [ ! -s "$CALLS" ]
 printf 'PASS invalid arguments and missing confirmation make no changes\n'
 
-output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" --dry-run)"
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --dry-run 2>&1)"
 [[ "$output" == *'Planning full Mana uninstall:'* ]]
+[[ "$output" == *'Full uninstall stops Mana services'* ]]
 [[ "$output" == *'planned (dry-run)'* ]]
 [[ "$(cat "$HOME/.ssh/config")" == 'edited SSH configuration' ]]
 [ ! -s "$CALLS" ]
 [ ! -f "$state/uninstalled" ]
-printf 'PASS default full dry-run does not restore files or change services\n'
+printf 'PASS explicit full dry-run warns without restoring files or changing services\n'
+
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" hermes --dry-run 2>&1)"
+[[ "$output" == *'Removing Hermes interrupts chat'* ]]
+[[ "$output" == *'login startup remains enabled'* ]]
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" omlx --dry-run 2>&1)"
+[[ "$output" == *'Stopping oMLX interrupts local inference'* ]]
+[ ! -s "$CALLS" ]
+printf 'PASS component previews explain service disruption and remaining startup\n'
 
 # Simulate installation receipts without touching real applications.
 : > "$state/casks.before"
@@ -137,7 +158,7 @@ export PATH="$SANDBOX/bin:$PATH"
 ln -s "$(mana_resolve_path "$(command -v jq)")" "$SANDBOX/bin/jq"
 
 export FAIL_ACTIVATION=1
-if /bin/bash "$REPO_DIR/libexec/mana/uninstall" --yes > "$SANDBOX/output" 2>&1; then
+if /bin/bash "$REPO_DIR/libexec/mana/uninstall" all --yes > "$SANDBOX/output" 2>&1; then
     printf 'FAIL activation failure was swallowed\n' >&2; exit 1
 fi
 ! grep -q 'brew uninstall\|container volume delete' "$CALLS"
@@ -162,7 +183,7 @@ grep -qxF 'brew uninstall --cask iina' "$CALLS"
 [ -f "$state/uninstalled" ]
 [ ! -L "$SANDBOX/bin/jq" ]
 before="$(cat "$CALLS")"
-/bin/bash "$REPO_DIR/libexec/mana/uninstall" --yes > "$SANDBOX/output"
+/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --yes > "$SANDBOX/output"
 [[ "$(cat "$CALLS")" == "$before" ]]
 printf 'PASS full uninstall restores baseline, removes owned casks, preserves shared tools, and is idempotent\n'
 
@@ -187,7 +208,7 @@ export CONTAINERS='[{"configuration":{"id":"hermes-agent"},"status":{"state":"ru
 unset CONTAINERS
 printf 'PASS Hermes teardown stops and deletes only its named container\n'
 
-output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" --purge --dry-run 2>&1)"
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --purge --dry-run 2>&1)"
 [[ "$output" == *'Keeping pre-existing hermes/workspace.'* ]]
 [[ "$output" == *'Keeping pre-existing or unrecorded Hermes volume'* ]]
 [[ "$output" != *'container volume delete hermes-data'* ]]
@@ -197,7 +218,7 @@ printf 'PASS full purge preserves recorded pre-existing host data\n'
 printf 'absent\n' > "$state/container.before"
 mana_record_install container
 export CONTAINERS='[{"configuration":{"id":"unrelated-worker"},"status":"running"}]'
-output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" --purge --dry-run 2>&1)"
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --purge --dry-run 2>&1)"
 [[ "$output" == *'Keeping Apple container: other workloads are present.'* ]]
 unset CONTAINERS
 printf 'PASS other container workloads prevent shared runtime removal\n'
@@ -205,7 +226,7 @@ printf 'PASS other container workloads prevent shared runtime removal\n'
 touch "$state/configuration.installed"
 touch "$ACTIVE_SYSTEM"
 before="$(cat "$CALLS")"
-if /bin/bash "$REPO_DIR/libexec/mana/uninstall" --yes > "$SANDBOX/output" 2>&1; then
+if /bin/bash "$REPO_DIR/libexec/mana/uninstall" all --yes > "$SANDBOX/output" 2>&1; then
     printf 'FAIL full uninstall altered an unrelated active Nix configuration\n' >&2; exit 1
 fi
 [[ "$(cat "$CALLS")" == "$before" ]]
@@ -215,8 +236,10 @@ printf 'PASS unrelated active Nix configuration is protected before teardown\n'
 # No receipt is required to inspect an old installation, and preview stays read-only.
 export HOME="$SANDBOX/no-record-home"
 mkdir "$HOME"
-output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" --dry-run 2>&1)"
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --dry-run 2>&1)"
 [[ "$output" == *'No original-state baseline.'* ]]
+[[ "$output" == *'Keeping pre-existing or unrecorded oMLX.'* ]]
+[[ "$output" != *'Planning oMLX uninstall:'* ]]
 [ ! -d "$(mana_state_dir)" ]
 printf 'PASS installations without any receipt can preview without changing state\n'
 
@@ -232,7 +255,7 @@ for tool in nix brew container omlx; do
 done
 mana_record_install nix
 [ ! -f "$state/nix.installed" ]
-output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" --dry-run 2>&1)"
+output="$(/bin/bash "$REPO_DIR/libexec/mana/uninstall" all --dry-run 2>&1)"
 [[ "$output" == *'No original-state baseline.'* ]]
 [ ! -f "$state/uninstalled" ]
 printf 'PASS legacy installations explicitly retain unknown shared tools\n'

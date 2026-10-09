@@ -188,21 +188,28 @@ your only copy of sessions or plugin state.
 
 ## Uninstall And Reset
 
-`mana uninstall` now defaults to a full uninstall; component removal is still
-available. **Preview first**, then run the confirmed operation:
+`mana uninstall` and `mana uninstall help` explain the choices without changing
+anything. Removal requires an explicit component or `all`, displays warnings,
+and asks for confirmation unless `--yes` is given. **Preview first**:
 
 ```bash
-mana uninstall --dry-run
 mana uninstall
+mana uninstall help
+mana uninstall hermes --dry-run
+mana uninstall omlx --dry-run
+mana uninstall container --dry-run
+mana uninstall all --dry-run
+mana uninstall all
 # Optional: also delete Mana data, including Hermes host files and model weights.
-mana uninstall --purge
+mana uninstall all --purge
 ```
 
 Full uninstall removes Mana's Home Manager packages/configuration and login
 startup, deactivates its nix-darwin configuration, and removes Hermes. It removes
 Homebrew casks and shared Nix/Homebrew/Apple container installations **only when
 an installation record establishes that Mana added them**. A pre-existing oMLX
-app is kept when recorded as such. Other container workloads, remaining Brew
+app is kept when pre-existing or ownership is unknown; use the explicit
+`mana uninstall omlx` command if you want to remove it anyway. Other container workloads, remaining Brew
 packages, or other user-profile Nix packages cause those shared tools to be retained.
 Shared container storage is kept even with full `--purge`; only Mana's volume
 is eligible for deletion. The repository is never deleted.
@@ -232,12 +239,14 @@ Data is retained unless `--purge` is given. Full purge includes `hermes/.env`,
 `hermes/config.yaml`, memories, workspace, and the named volume. Recorded
 pre-existing host files/directories, oMLX data, and pre-existing or
 uninventoried Hermes volumes are retained. Purging an
-unrecorded legacy installation deletes these Mana-specific locations; back up
-anything valuable before confirming.
+unrecorded legacy installation deletes the Hermes-specific locations but keeps
+oMLX when app ownership is unknown. Use `mana uninstall omlx --purge` for explicit
+oMLX removal. Back up anything valuable before confirming.
 
 | Component | Default behavior | `--purge` adds |
 |-----------|------------------|----------------|
-| `all` (default) | Full installation removal, ownership safeguards and baseline restoration | Delete Mana data, including host data not recorded as pre-existing |
+| `help` (default) | Explain options and warnings; change nothing | N/A |
+| `all` | Remove Mana-owned manifest entries, with ownership safeguards and baseline restoration | Delete Mana data, including host data not recorded as pre-existing |
 | `omlx` | Remove app; keep `~/.omlx/` | Remove oMLX data; `--keep-models` / `--keep-config` spare selected data |
 | `hermes` | Remove container and image; keep volume and host files | Delete the named volume, including sessions, plugins, and cron state |
 | `container` | Remove runtime while keeping data | Ask the upstream uninstaller to delete runtime data |

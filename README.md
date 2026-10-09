@@ -63,7 +63,7 @@ and restart Hermes. Web search and browsing still use the network.
 | `mana bootstrap` | Reconcile the workstation, including installing/updating Apple container |
 | `mana omlx <command>` | App installation/update, lifecycle, status, logs, model IDs, and API key |
 | `mana hermes [command]` | Bare command opens chat; also `up`, `down`, `restart`, `rebuild`, `status`, `dashboard`, `logs` |
-| `mana uninstall [component]` | Remove Mana by default, or select `omlx`, `hermes`, or `container`; retain data and shared tools unless removal is authorized |
+| `mana uninstall [component]` | Show help by default; select `hermes`, `omlx`, `container`, or `all` for warned, confirmed removal |
 
 `mana version` reads local metadata without installing, updating, or starting
 anything. It includes the Mana Git revision (with `-dirty` for tracked edits),
