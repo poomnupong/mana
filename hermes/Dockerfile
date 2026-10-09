@@ -11,8 +11,10 @@ RUN apt-get update && \
 RUN npm install -g camofox-browser
 
 # ── Install SearXNG into the Hermes venv ─────────────────
+# SearXNG's setup.py imports its settings before pip resolves runtime deps.
+# Preinstall those imports; --no-build-isolation uses this same environment.
 RUN curl -sS https://bootstrap.pypa.io/get-pip.py | /opt/hermes/.venv/bin/python && \
-    /opt/hermes/.venv/bin/pip install --no-cache-dir setuptools msgspec && \
+    /opt/hermes/.venv/bin/pip install --no-cache-dir setuptools msgspec pyyaml typing-extensions && \
     /opt/hermes/.venv/bin/pip install --no-cache-dir --no-build-isolation \
       git+https://github.com/searxng/searxng.git@master
 

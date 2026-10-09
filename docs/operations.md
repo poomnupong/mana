@@ -112,6 +112,13 @@ Bootstrap is a reconcile operation, not a promise to leave existing settings unt
 reloads Hermes configuration without updating its image; a missing image is built
 on demand. Bootstrap does not rebuild an existing Hermes image.
 
+If the first image build fails during SearXNG metadata generation with
+`ModuleNotFoundError: No module named 'yaml'`, update the checkout and rerun
+`./bin/mana bootstrap`. The image recipe installs SearXNG's settings-import
+dependencies before generating metadata; pip cannot install them afterward
+when that step fails. If an older Hermes image already exists, use
+`mana hermes rebuild` to apply the corrected recipe.
+
 ## Apply And Update
 
 Declare CLI packages in [home.nix](../home.nix), GUI apps and Brew formulae in
