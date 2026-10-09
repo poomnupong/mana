@@ -59,6 +59,8 @@
       "iina"
       "iterm2"
       "visual-studio-code"
+      "copilot-cli"
+      "github-copilot-app"
       "lm-studio"
       "ollama-app"
       "appcleaner"

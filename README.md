@@ -100,7 +100,7 @@ authentication gate is responding.
 | Layer | Source of truth | Owner |
 |-------|-----------------|-------|
 | System, CLI tools, shell, login startup | [darwin.nix](darwin.nix), [home.nix](home.nix), [flake.lock](flake.lock) | Nix / nix-darwin / Home Manager |
-| GUI apps and any Brew formulae | `homebrew.casks` / `homebrew.brews` in [darwin.nix](darwin.nix) | Declarative Homebrew activation |
+| GUI apps, Copilot CLI, and any Brew formulae | `homebrew.casks` / `homebrew.brews` in [darwin.nix](darwin.nix) | Declarative Homebrew activation |
 | oMLX app | [libexec/mana/omlx](libexec/mana/omlx) | Official signed DMG; app owns its server |
 | Apple container runtime | [libexec/mana/bootstrap](libexec/mana/bootstrap) | Official package; user-scoped runtime |
 | Hermes | [hermes/Dockerfile](hermes/Dockerfile), [hermes/run.sh](hermes/run.sh) | Mana recipe and Apple container |
@@ -110,6 +110,11 @@ authentication gate is responding.
 Activation deliberately uses forced `zap` cleanup: undeclared Brew software and
 associated cask data can be removed. Rebuilds may install newly declared packages,
 but do not upgrade existing versions. `mana update` owns those upgrades.
+
+GitHub Copilot CLI (`copilot-cli`), the GitHub Copilot app (`github-copilot-app`),
+and VS Code (`visual-studio-code`) are declared as Homebrew casks. Copilot CLI is
+not also installed through Home Manager, so Homebrew owns its updates. The
+deprecated Homebrew `copilot` formula is AWS Copilot, not GitHub Copilot.
 
 `mana update` does not update Apple container, Hermes images, or modelops
 dependencies. Use bootstrap for the runtime, `mana hermes rebuild` for a new

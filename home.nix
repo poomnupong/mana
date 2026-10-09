@@ -33,9 +33,6 @@
     uv                              # Python project + venv manager
     python3Packages.huggingface-hub # `hf` CLI for downloads/uploads
 
-    # GitHub Copilot CLI (`copilot` — standalone coding-agent CLI, not the gh extension)
-    github-copilot-cli
-
     # Fonts (Nerd Fonts)
     nerd-fonts.fira-code
   ];
