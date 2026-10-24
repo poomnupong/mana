@@ -16,7 +16,7 @@
     iperf3
 
     # Archive
-    p7zip
+    p7zip-rar
 
     # Media
     ffmpeg
