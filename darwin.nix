@@ -4,6 +4,25 @@
   # Nix management handled by Determinate Systems installer
   nix.enable = false;
   nixpkgs.config.allowUnfree = true;
+  nixpkgs.overlays = [
+    (final: prev: {
+      pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+        (pythonFinal: pythonPrev: {
+          # Azure CLI needs Fabric, which cannot use Invoke 3 yet. Keep its
+          # transitive dependencies (including Paramiko) on the same Invoke.
+          # Remove when https://github.com/fabric/fabric/issues/2376 is resolved.
+          invoke = pythonPrev.invoke.overridePythonAttrs (_: {
+            version = "2.2.1";
+            src = final.fetchPypi {
+              pname = "invoke";
+              version = "2.2.1";
+              hash = "sha256-UVv0m0pIkyt5sCRZA0jaIvOcSULf+ZGtH7i4uuob5wc=";
+            };
+          });
+        })
+      ];
+    })
+  ];
 
   # System-level packages (available to all users)
   environment.systemPackages = [ ];

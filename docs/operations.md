@@ -144,6 +144,15 @@ review the lockfile diff, verify activation and `mana doctor`, and commit the
 tested pins, preferably separately from feature changes. Do not routinely delete
 or ignore the lockfile. Modelops dependencies have their own [lockfile](../modelops/uv.lock).
 
+If an update reports that `python3.14-fabric-3.2.3` is broken, the dependency
+comes from Azure CLI, even if the evaluation trace mentions Home Manager fonts.
+Fabric 3.2.3 is incompatible with Invoke 3. Mana's Python overlay pins
+Invoke to 2.2.1 consistently across Fabric and its dependencies until
+[upstream support](https://github.com/fabric/fabric/issues/2376) lands.
+Keep broken-package checks enabled; do not set `allowBroken` or ignore
+`fabric.broken`. After applying this fix, rerun `mana update --no-flake` to retry
+the inputs already written to the lockfile by the failed update.
+
 ## Backups
 
 Protect backups as secrets. At minimum preserve the local Hermes configuration,
