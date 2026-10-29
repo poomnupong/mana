@@ -63,6 +63,7 @@ and restart Hermes. Web search and browsing still use the network.
 | `mana bootstrap` | Reconcile the workstation, including installing/updating Apple container |
 | `mana omlx <command>` | App installation/update, lifecycle, status, logs, model IDs, and API key |
 | `mana hermes [command]` | Bare command opens chat; also `up`, `down`, `restart`, `rebuild`, `status`, `dashboard`, `logs` |
+| `mana copilot <command>` | Isolated certificate-backed Azure profile: `init`, `login`, `status`, `launch` |
 | `mana uninstall [component]` | Show help by default; select `hermes`, `omlx`, `container`, or `all` for warned, confirmed removal |
 
 `mana version` reads local metadata without installing, updating, or starting
@@ -116,6 +117,45 @@ and VS Code (`visual-studio-code`) are declared as Homebrew casks. Copilot CLI i
 not also installed through Home Manager, so Homebrew owns its updates. The
 deprecated Homebrew `copilot` formula is AWS Copilot, not GitHub Copilot.
 
+### Copilot app: isolated Azure inference identity
+
+Use a distinct certificate-authenticated service principal per Mac. Manage its
+application, public certificate, and inference-only RBAC through
+`poomnupong/poomlab-azure`, not through ad hoc Azure mutations:
+
+```bash
+mana copilot init
+# Register the printed device ID and public certificate in poomlab-azure,
+# review its plan, and deploy that device's identity and narrow RBAC.
+mana copilot login TENANT_ID CLIENT_ID
+mana copilot status
+# Quit GitHub Copilot normally before running:
+mana copilot launch
+```
+
+`init` is idempotent and never replaces an existing key. It creates a 365-day
+certificate and an unencrypted private PEM protected by a mode-700 directory
+and mode-600 file at `~/Library/Application Support/mana/copilot-azure/`.
+Only `certificate.pem`, the device ID, and other non-secret identity metadata
+belong in the Azure repository. Never copy or commit `identity.pem`, the
+`azure/` credential cache, or access tokens. Back up private state securely;
+rotate the certificate in poomlab-azure before expiry. Removing an application's
+credential does not immediately invalidate already-issued access tokens.
+
+The launcher passes this private directory's `azure/` profile through
+`AZURE_CONFIG_DIR` to the app only. It leaves the normal Azure CLI profile and
+GitHub authentication unchanged. Azure CLI commands spawned by the app inherit
+the restricted identity too; run administrative Azure work in a separate
+environment. This separates authentication contexts, **not** access to files
+owned by the same macOS user.
+
+Always use `mana copilot launch` after quitting the app; Finder/Dock launches
+do not select this profile. Bind the app's Microsoft Foundry provider explicitly
+to the new service principal, with the deployed wire-model name and
+chat-completions API. Do not retain an admin-account binding or use a short-lived
+token as a permanent API key. Model-picker presence and local `status` do not
+prove inference: verify a real request after RBAC propagation and app restart.
+
 `mana update` does not update Apple container, Hermes images, or modelops
 dependencies. Use bootstrap for the runtime, `mana hermes rebuild` for a new
 Hermes image, and the [modelops workflow](modelops/README.md) for Python packages.
@@ -135,6 +175,7 @@ channels. Review updates before relying on them for unattended workloads.
 | Memories and exchanged files | gitignored `hermes/data/` and `hermes/workspace/` | Yes |
 | Sessions, plugins, cron, caches | `hermes-data` named volume | Yes |
 | oMLX settings, key, and models | `~/.omlx/` | Yes |
+| Copilot Azure certificate and credential cache | `~/Library/Application Support/mana/copilot-azure/` | Yes |
 | Disposable Hermes root filesystem | Apple container storage | No, on Hermes rebuild |
 
 Rebuild is **not a clean-state or incident-recovery reset**. Persistent plugins,
@@ -156,6 +197,7 @@ in code; runtime discovery alone does not make a service managed.
 ```bash
 /bin/bash tests/lifecycle.sh
 /bin/bash tests/uninstall.sh
+/bin/bash tests/copilot.sh
 ```
 
 The checks cover lifecycle regressions, version parsing, uninstall ownership,

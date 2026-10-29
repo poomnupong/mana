@@ -29,6 +29,7 @@ Commands:
     services    Review and control managed services and Apple containers
     omlx        Install, update, and control the oMLX app/server
     hermes      Control or chat with the Hermes container
+    copilot     Manage an isolated certificate-backed Azure profile for the app
     uninstall   Show removal options; select a component or all to uninstall
 
 Examples:
@@ -45,7 +46,7 @@ EOF
 
 command_script() {
     case "$1" in
-        version|bootstrap|rebuild|update|doctor|services|omlx|hermes|uninstall)
+        version|bootstrap|rebuild|update|doctor|services|omlx|hermes|copilot|uninstall)
             printf '%s/%s\n' "$COMMAND_DIR" "$1"
             ;;
         *)

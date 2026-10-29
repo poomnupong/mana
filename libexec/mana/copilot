@@ -1,0 +1,163 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+
+STATE="$HOME/Library/Application Support/mana/copilot-azure"
+PROFILE="$STATE/azure"
+KEY="$STATE/identity.pem"
+CERT="$STATE/certificate.pem"
+IDENTITY="$STATE/identity.json"
+APP="/Applications/GitHub Copilot.app"
+
+fail() {
+    printf 'mana copilot: %s\n' "$*" >&2
+    exit 1
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: mana copilot {init|login TENANT_ID CLIENT_ID|status|launch}
+
+    init       Generate a per-Mac ID and 365-day certificate; never rotate implicitly
+    login      Sign in a provisioned service principal in the isolated Azure profile
+    status     Validate local credentials and show the selected isolated identity
+    launch     Launch the stopped app with only this Azure profile selected
+
+Private state: ~/Library/Application Support/mana/copilot-azure/
+Only certificate.pem and the device ID belong in poomlab-azure.
+Provision identities and RBAC through poomlab-azure; this command creates no
+Azure resources. It never signs out or modifies the default Azure CLI profile.
+
+Quit the app yourself before launch. Always use this launcher: Finder/Dock
+launches do not select the isolated profile. Commands spawned by the launched
+app inherit this profile too. This is not a sandbox against other local files.
+EOF
+}
+
+check_state() {
+    local path
+    for path in "$STATE" "$KEY" "$CERT" "$STATE/device-id"; do
+        [ ! -L "$path" ] || fail "Refusing symlink: $path"
+        [ -e "$path" ] || fail "Missing $path; run 'mana copilot init' first."
+        [ "$(stat -f '%u' "$path")" = "$(id -u)" ] || fail "Not owned by the current user: $path"
+    done
+    [ "$(stat -f '%Lp' "$STATE")" = 700 ] || fail "Private state directory must have mode 700."
+    [ "$(stat -f '%Lp' "$KEY")" = 600 ] || fail "Private PEM must have mode 600."
+    openssl x509 -in "$CERT" -noout -checkend 0 >/dev/null ||
+        fail "Certificate is invalid or expired; rotate through poomlab-azure."
+    [ "$(openssl pkey -in "$KEY" -pubout 2>/dev/null | shasum -a 256)" = \
+      "$(openssl x509 -in "$CERT" -pubkey -noout | shasum -a 256)" ] ||
+        fail "Private key and public certificate do not match."
+}
+
+check_profile_path() {
+    [ ! -L "$PROFILE" ] || fail "Refusing a symlinked Azure profile."
+    if [ -e "$PROFILE" ]; then
+        [ -d "$PROFILE" ] || fail "Azure profile is not a directory."
+        [ "$(stat -f '%u' "$PROFILE")" = "$(id -u)" ] || fail "Azure profile has another owner."
+        [ "$(stat -f '%Lp' "$PROFILE")" = 700 ] || fail "Azure profile must have mode 700."
+    fi
+}
+
+account() {
+    AZURE_CONFIG_DIR="$PROFILE" az account show \
+        --query '{tenantId:tenantId,subscriptionId:id,clientId:user.name,type:user.type}' -o json
+}
+
+check_account() {
+    local selected
+    [ -f "$IDENTITY" ] && [ ! -L "$IDENTITY" ] ||
+        fail "No saved service principal; run 'mana copilot login TENANT_ID CLIENT_ID'."
+    check_profile_path
+    [ -d "$PROFILE" ] || fail "Isolated Azure profile is missing; sign in again."
+    selected="$(account)" || fail "Cannot read the isolated Azure CLI account; sign in again."
+    jq -e --slurpfile expected "$IDENTITY" '
+        .type == "servicePrincipal" and
+        .tenantId == $expected[0].tenantId and
+        .clientId == $expected[0].clientId
+    ' <<<"$selected" >/dev/null || fail "Azure profile does not match the saved service principal."
+    printf '%s\n' "$selected"
+}
+
+initialize() {
+    local staging device
+    [ ! -L "$STATE" ] || fail "Refusing a symlinked private state directory."
+    if [ -e "$STATE/device-id" ] || [ -e "$KEY" ] || [ -e "$CERT" ] ||
+        [ -e "$IDENTITY" ] || [ -e "$PROFILE" ]; then
+        check_state
+    else
+        mkdir -p "$STATE"
+        [ "$(stat -f '%u' "$STATE")" = "$(id -u)" ] || fail "Private state has another owner."
+        chmod 700 "$STATE"
+        staging="$(mktemp -d "$STATE/.init.XXXXXX")"
+        trap 'rm -f "$staging/identity.pem" "$staging/certificate.pem" "$staging/device-id" "$staging/openssl.log"; rmdir "$staging"' EXIT
+        device="mac-$(uuidgen | tr '[:upper:]' '[:lower:]')"
+        if ! openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+            -subj "/CN=$device" -keyout "$staging/identity.pem" \
+            -out "$staging/certificate.pem" 2>"$staging/openssl.log"; then
+            cat "$staging/openssl.log" >&2
+            fail "Certificate generation failed."
+        fi
+        cat "$staging/certificate.pem" >>"$staging/identity.pem"
+        printf '%s\n' "$device" >"$staging/device-id"
+        chmod 600 "$staging/identity.pem"
+        mv "$staging/identity.pem" "$KEY"
+        mv "$staging/certificate.pem" "$CERT"
+        mv "$staging/device-id" "$STATE/device-id"
+        rm "$staging/openssl.log"
+        rmdir "$staging"
+        trap - EXIT
+        check_state
+    fi
+    printf 'Device: %s\nPublic certificate: %s\n' "$(<"$STATE/device-id")" "$CERT"
+    openssl x509 -in "$CERT" -noout -enddate -fingerprint -sha256
+}
+
+login() {
+    local tenant="$1" client="$2" uuid selected
+    uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    [[ "$tenant" =~ $uuid && "$client" =~ $uuid ]] || fail "Tenant and client IDs must be UUIDs."
+    check_state
+    check_profile_path
+    if [ -e "$IDENTITY" ] || [ -L "$IDENTITY" ]; then
+        [ ! -L "$IDENTITY" ] && jq -e --arg tenant "$tenant" --arg client "$client" \
+            '.tenantId == $tenant and .clientId == $client' "$IDENTITY" >/dev/null ||
+            fail "Refusing to replace a different saved identity."
+    fi
+    mkdir -p "$PROFILE"
+    chmod 700 "$PROFILE"
+    AZURE_CONFIG_DIR="$PROFILE" az login --service-principal --username "$client" \
+        --certificate "$KEY" --tenant "$tenant" --allow-no-subscriptions -o none
+    selected="$(account)"
+    jq -e --arg tenant "$tenant" --arg client "$client" \
+        '.type == "servicePrincipal" and .tenantId == $tenant and .clientId == $client' \
+        <<<"$selected" >/dev/null || fail "Login did not select the expected service principal."
+    printf '%s\n' "$selected" >"$IDENTITY"
+    printf 'Isolated Azure profile authenticated; the default profile was not changed.\n'
+}
+
+command="${1:-help}"
+case "$command" in
+    help|-h|--help) show_help; exit 0 ;;
+    init|status|launch) [ "$#" = 1 ] || { show_help >&2; exit 2; } ;;
+    login) [ "$#" = 3 ] || { show_help >&2; exit 2; } ;;
+    *) show_help >&2; exit 2 ;;
+esac
+case "$command" in
+    init) initialize ;;
+    login) login "$2" "$3" ;;
+    status)
+        check_state
+        check_account
+        openssl x509 -in "$CERT" -noout -enddate
+        ;;
+    launch)
+        check_state
+        check_account >/dev/null
+        if pgrep -f '^/Applications/GitHub Copilot[.]app/Contents/MacOS/github( |$)' >/dev/null; then
+            fail "Quit GitHub Copilot first, then run 'mana copilot launch'. Nothing was stopped."
+        fi
+        open --env "AZURE_CONFIG_DIR=$PROFILE" -a "$APP"
+        printf 'Requested GitHub Copilot launch with the isolated Azure profile.\n'
+        ;;
+esac
