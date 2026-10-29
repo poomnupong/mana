@@ -28,9 +28,19 @@ az() {
         *) printf 'Unexpected Azure command\n' >&2; return 99 ;;
     esac
 }
-open() { printf 'open|%s\n' "$*" >>"$CALLS"; return "${OPEN_EXIT:-0}"; }
-pgrep() { return "${APP_RUNNING:-1}"; }
-export -f az open pgrep
+open() {
+    printf 'open|%s\n' "$*" >>"$CALLS"
+    [ -z "${OPEN_WARNING:-}" ] || printf '%s\n' "$OPEN_WARNING" >&2
+    return "${OPEN_EXIT:-0}"
+}
+osascript() {
+    case "${APP_RUNNING:-1}" in
+        0) printf 'true\n' ;;
+        1) printf 'false\n' ;;
+        *) return 2 ;;
+    esac
+}
+export -f az open osascript
 
 /bin/bash "$COMMAND" init >"$SANDBOX/init-output"
 before="$(shasum -a 256 "$STATE/identity.pem")"
@@ -109,6 +119,14 @@ if /bin/bash "$COMMAND" launch >/dev/null 2>&1; then
 fi
 unset OPEN_EXIT
 printf 'PASS app launch failures propagate\n'
+
+export OPEN_WARNING='Application was already running; additional environment variables could not be set.'
+if /bin/bash "$COMMAND" launch >"$SANDBOX/output" 2>&1; then
+    printf 'FAIL accepted a successful open exit with an ignored environment\n' >&2; exit 1
+fi
+grep -q 'isolated startup was not confirmed' "$SANDBOX/output"
+unset OPEN_WARNING
+printf 'PASS app-launch races and environment warnings fail closed\n'
 
 export CLIENT=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 if /bin/bash "$COMMAND" status >"$SANDBOX/output" 2>&1; then

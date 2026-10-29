@@ -154,13 +154,21 @@ case "$command" in
     launch)
         check_state
         check_account >/dev/null
-        if pgrep -f '^/Applications/GitHub Copilot[.]app/Contents/MacOS/github( |$)' >/dev/null; then
-            fail "Quit GitHub Copilot first, then run 'mana copilot launch'. Nothing was stopped."
-        else
-            result=$?
-            [ "$result" = 1 ] || fail "Could not determine whether GitHub Copilot is running."
+        running="$(osascript -e 'application id "com.github.githubapp" is running')" ||
+            fail "Could not determine whether GitHub Copilot is running."
+        case "$running" in
+            true) fail "Quit GitHub Copilot first, then run 'mana copilot launch'. Nothing was stopped." ;;
+            false) ;;
+            *) fail "Unexpected app-running status: $running" ;;
+        esac
+        if ! launch_output="$(open --env "AZURE_CONFIG_DIR=$PROFILE" -a "$APP" 2>&1)"; then
+            printf '%s\n' "$launch_output" >&2
+            fail "App launch failed."
         fi
-        open --env "AZURE_CONFIG_DIR=$PROFILE" -a "$APP"
+        if [ -n "$launch_output" ]; then
+            printf '%s\n' "$launch_output" >&2
+            fail "App launcher reported a warning; isolated startup was not confirmed."
+        fi
         printf 'Requested GitHub Copilot launch with the isolated Azure profile.\n'
         ;;
 esac
