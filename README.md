@@ -117,6 +117,16 @@ and VS Code (`visual-studio-code`) are declared as Homebrew casks. Copilot CLI i
 not also installed through Home Manager, so Homebrew owns its updates. The
 deprecated Homebrew `copilot` formula is AWS Copilot, not GitHub Copilot.
 
+`mana update` does not update Apple container, Hermes images, or modelops
+dependencies. Use bootstrap for the runtime, `mana hermes rebuild` for a new
+Hermes image, and the [modelops workflow](modelops/README.md) for Python packages.
+`mana hermes restart` reloads configuration without rebuilding or updating images.
+
+This is an installation recipe with **partial version pinning**, not a bit-for-bit
+reproducible machine image. Nix and modelops have lockfiles; Brew releases, oMLX,
+Apple container, and upstream Hermes image/build dependencies follow moving
+channels. Review updates before relying on them for unattended workloads.
+
 ### Copilot app: isolated Azure inference identity
 
 Use a distinct certificate-authenticated service principal per Mac. Manage its
@@ -155,16 +165,9 @@ to the new service principal, with the deployed wire-model name and
 chat-completions API. Do not retain an admin-account binding or use a short-lived
 token as a permanent API key. Model-picker presence and local `status` do not
 prove inference: verify a real request after RBAC propagation and app restart.
-
-`mana update` does not update Apple container, Hermes images, or modelops
-dependencies. Use bootstrap for the runtime, `mana hermes rebuild` for a new
-Hermes image, and the [modelops workflow](modelops/README.md) for Python packages.
-`mana hermes restart` reloads configuration without rebuilding or updating images.
-
-This is an installation recipe with **partial version pinning**, not a bit-for-bit
-reproducible machine image. Nix and modelops have lockfiles; Brew releases, oMLX,
-Apple container, and upstream Hermes image/build dependencies follow moving
-channels. Review updates before relying on them for unattended workloads.
+Catalog-only provider health probes can fail under inference-only RBAC even
+when chat works. Register the deployed model explicitly rather than granting
+broad access just to satisfy model discovery.
 
 ## State And Recovery
 

@@ -13,8 +13,11 @@ CLIENT=11111111-2222-4333-8444-555555555555
 export TENANT CLIENT
 mkdir -p "$HOME/.azure"
 printf 'untouched\n' >"$HOME/.azure/sentinel"
+export AZURE_CONFIG_DIR="$HOME/.azure"
 
 az() {
+    [[ "$AZURE_CONFIG_DIR" = "$HOME/Library/Application Support/mana/copilot-azure/azure" ]] ||
+        { printf 'FAIL attempted to use the normal Azure profile\n' >&2; return 98; }
     printf '%s|%s\n' "${AZURE_CONFIG_DIR:-UNSET}" "$*" >>"$CALLS"
     case "$1 $2" in
         'login --service-principal') return "${LOGIN_EXIT:-0}" ;;
@@ -57,7 +60,24 @@ unset ACCOUNT_TYPE
 grep -q "$CLIENT" "$SANDBOX/status"
 ! grep -q '^UNSET|' "$CALLS"
 [[ "$(<"$HOME/.azure/sentinel")" = untouched ]]
+[[ "$AZURE_CONFIG_DIR" = "$HOME/.azure" ]]
 printf 'PASS login/status isolate Azure configuration and reject user identities\n'
+
+before="$(wc -l <"$CALLS")"
+if /bin/bash "$COMMAND" login invalid "$CLIENT" >"$SANDBOX/output" 2>&1; then
+    printf 'FAIL accepted malformed identity arguments\n' >&2; exit 1
+fi
+[[ "$(wc -l <"$CALLS")" = "$before" ]]
+mv "$STATE/azure" "$STATE/azure-saved"
+ln -s "$HOME/.azure" "$STATE/azure"
+if /bin/bash "$COMMAND" status >"$SANDBOX/output" 2>&1; then
+    printf 'FAIL followed a profile symlink into the admin cache\n' >&2; exit 1
+fi
+grep -q 'symlinked Azure profile' "$SANDBOX/output"
+rm "$STATE/azure"
+mv "$STATE/azure-saved" "$STATE/azure"
+[[ "$(wc -l <"$CALLS")" = "$before" ]]
+printf 'PASS invalid inputs and symlinked profiles fail before Azure commands\n'
 
 chmod 644 "$STATE/identity.pem"
 if /bin/bash "$COMMAND" status >"$SANDBOX/output" 2>&1; then
@@ -72,6 +92,12 @@ if /bin/bash "$COMMAND" launch >"$SANDBOX/output" 2>&1; then
 fi
 grep -q 'Quit GitHub Copilot first' "$SANDBOX/output"
 ! grep -q '^open|' "$CALLS"
+unset APP_RUNNING
+export APP_RUNNING=2
+if /bin/bash "$COMMAND" launch >"$SANDBOX/output" 2>&1; then
+    printf 'FAIL ignored process inspection failure\n' >&2; exit 1
+fi
+grep -q 'Could not determine' "$SANDBOX/output"
 unset APP_RUNNING
 /bin/bash "$COMMAND" launch
 grep -Fq "open|--env AZURE_CONFIG_DIR=$STATE/azure -a /Applications/GitHub Copilot.app" "$CALLS"

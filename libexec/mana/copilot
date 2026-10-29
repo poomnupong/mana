@@ -156,6 +156,9 @@ case "$command" in
         check_account >/dev/null
         if pgrep -f '^/Applications/GitHub Copilot[.]app/Contents/MacOS/github( |$)' >/dev/null; then
             fail "Quit GitHub Copilot first, then run 'mana copilot launch'. Nothing was stopped."
+        else
+            result=$?
+            [ "$result" = 1 ] || fail "Could not determine whether GitHub Copilot is running."
         fi
         open --env "AZURE_CONFIG_DIR=$PROFILE" -a "$APP"
         printf 'Requested GitHub Copilot launch with the isolated Azure profile.\n'
