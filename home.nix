@@ -86,7 +86,6 @@
           'services:review and control managed services and Apple containers'
           'omlx:install, update, and control the oMLX app/server'
           'hermes:control or chat with the Hermes container'
-          'copilot:manage an isolated Azure identity for the Copilot app'
           'uninstall:review removal options or uninstall selected components'
           'help:show command help'
         )
@@ -105,10 +104,6 @@
           omlx)
             subcommands=(status install upgrade start stop restart logs models key)
             _describe 'oMLX command' subcommands
-            ;;
-          copilot)
-            subcommands=(init login status launch)
-            _describe 'Copilot Azure action' subcommands
             ;;
           services)
             if (( CURRENT == 3 )); then
