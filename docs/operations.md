@@ -144,14 +144,20 @@ review the lockfile diff, verify activation and `mana doctor`, and commit the
 tested pins, preferably separately from feature changes. Do not routinely delete
 or ignore the lockfile. Modelops dependencies have their own [lockfile](../modelops/uv.lock).
 
-If an update reports that `python3.14-fabric-3.2.3` is broken, the dependency
-comes from Azure CLI, even if the evaluation trace mentions Home Manager fonts.
-Fabric 3.2.3 is incompatible with Invoke 3. Mana's Python overlay pins
-Invoke to 2.2.1 consistently across Fabric and its dependencies until
-[upstream support](https://github.com/fabric/fabric/issues/2376) lands.
-Keep broken-package checks enabled; do not set `allowBroken` or ignore
-`fabric.broken`. After applying this fix, rerun `mana update --no-flake` to retry
-the inputs already written to the lockfile by the failed update.
+Fabric comes from Azure CLI, even if the evaluation trace mentions Home Manager
+fonts. Current nixpkgs patches Fabric 3.2.3 for Invoke 3. Mana's former Invoke
+2.2.1 overlay must be removed: combining it with that patch causes Fabric tests
+to fail with `Context.init() got an unexpected keyword argument 'remainder'`.
+Keep package tests and broken-package checks enabled. After applying this fix,
+rerun `mana update --no-flake` to retry the inputs already written to the lockfile
+by the failed update.
+
+The local `ollama-app` cask and its port 11434 firewall declaration are no longer
+managed. Activation's forced Homebrew `zap` cleanup removes the undeclared app
+and may remove associated data; back up any local Ollama models/configuration
+before rebuilding. The optional Hermes Ollama Cloud fallback is unchanged and
+does not require the local app. Already-loaded legacy PF rules remain until
+flushed or rebooted; removing the declaration does not flush live firewall state.
 
 ## Backups
 
