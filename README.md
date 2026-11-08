@@ -143,7 +143,8 @@ for backup, troubleshooting, and explicit purge behavior.
 
 Hermes starts at login through Home Manager. Service stop/start commands affect
 the current session; change the Nix launch agent to change login policy. Optional
-Ollama and LM Studio apps are installed, but Mana does not control their servers.
+LM Studio is installed, but Mana does not control its server. The local Ollama
+app is not installed; the optional Ollama Cloud fallback needs no local app.
 There are no ComfyUI or Open-WebUI service definitions in this repository.
 
 ## Development
