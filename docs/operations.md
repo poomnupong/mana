@@ -144,6 +144,10 @@ review the lockfile diff, verify activation and `mana doctor`, and commit the
 tested pins, preferably separately from feature changes. Do not routinely delete
 or ignore the lockfile. Modelops dependencies have their own [lockfile](../modelops/uv.lock).
 
+Home Manager preserves files that conflict with managed dotfiles. The first
+copy uses the `hm-backup` suffix; later collisions use numbered suffixes such as
+`hm-backup.1` so an older backup is never overwritten during activation.
+
 Fabric comes from Azure CLI, even if the evaluation trace mentions Home Manager
 fonts. Current nixpkgs patches Fabric 3.2.3 for Invoke 3. Mana's former Invoke
 2.2.1 overlay must be removed: combining it with that patch causes Fabric tests

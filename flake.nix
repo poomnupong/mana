@@ -61,13 +61,32 @@
       modules = [
         ./darwin.nix
         home-manager.darwinModules.home-manager
-        {
+        ({ pkgs, ... }: {
           home-manager.useGlobalPkgs = true;
           home-manager.useUserPackages = true;
           home-manager.backupFileExtension = "hm-backup";
+          home-manager.backupCommand = pkgs.writeShellScript "mana-home-manager-backup" ''
+            set -eu
+
+            if [ "$#" -ne 1 ]; then
+              echo "usage: mana-home-manager-backup PATH" >&2
+              exit 2
+            fi
+
+            target="$1"
+            backup="$target.hm-backup"
+            index=1
+            while [ -e "$backup" ] || [ -L "$backup" ]; do
+              backup="$target.hm-backup.$index"
+              index=$((index + 1))
+            done
+
+            echo "Moving existing file '$target' to '$backup'" >&2
+            ${pkgs.coreutils}/bin/mv -- "$target" "$backup"
+          '';
           home-manager.extraSpecialArgs = { inherit username; };
           home-manager.users.${username} = import ./home.nix;
-        }
+        })
       ];
     };
   };
